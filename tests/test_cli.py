@@ -347,11 +347,59 @@ def test_cli_inspect_reports_probe_errors(
 
     monkeypatch.setattr("dubgraft.cli.probe_media", fail_probe)
 
-    with pytest.raises(SystemExit) as exit_info:
-        main(["inspect", "episode.mkv"])
+    assert main(["inspect", "episode.mkv"]) == 1
 
-    assert exit_info.value.code == 1
     assert "ffprobe was not found in PATH" in capsys.readouterr().err
+
+
+def test_cli_inspect_prints_multiple_media_in_argument_order(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    paths = [Path("source.mkv"), Path("target.mkv"), Path("extra.mkv")]
+
+    def probe(path: Path) -> MediaInfo:
+        return MediaInfo(path, "matroska,webm", None, None, None, ())
+
+    monkeypatch.setattr("dubgraft.cli.probe_media", probe)
+
+    assert main(["inspect", *(str(path) for path in paths)]) == 0
+
+    output = capsys.readouterr().out
+    positions = [output.index(f"Media: {path.name}") for path in paths]
+    assert positions == sorted(positions)
+    assert output.count("\n\nMedia:") == 2
+
+
+def test_cli_inspect_continues_after_individual_probe_failure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    inspected = []
+
+    def probe(path: Path) -> MediaInfo:
+        inspected.append(path)
+        if path == Path("broken.mkv"):
+            raise MediaProbeError("invalid media data")
+        return MediaInfo(path, "matroska,webm", None, None, None, ())
+
+    monkeypatch.setattr("dubgraft.cli.probe_media", probe)
+
+    assert main(["inspect", "source.mkv", "broken.mkv", "target.mkv"]) == 1
+
+    captured = capsys.readouterr()
+    assert "Media: source.mkv" in captured.out
+    assert "Media: target.mkv" in captured.out
+    assert "broken.mkv: invalid media data" in captured.err
+    assert inspected == [Path("source.mkv"), Path("broken.mkv"), Path("target.mkv")]
+
+
+def test_cli_inspect_requires_at_least_one_media(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main(["inspect"])
+
+    assert exit_info.value.code == 2
+    assert "the following arguments are required: MEDIA" in capsys.readouterr().err
 
 
 def test_cli_inspect_help(capsys: pytest.CaptureFixture[str]) -> None:

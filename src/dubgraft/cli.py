@@ -35,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dubgraft",
         description="Align and graft dubbed audio across media releases using distributed audio anchors.",
-        epilog="command:\n  inspect MEDIA         show video, audio, and stream summary",
+        epilog="command:\n  inspect MEDIA [...]   show video, audio, and stream summaries",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -77,7 +77,9 @@ def build_inspect_parser() -> argparse.ArgumentParser:
         prog="dubgraft inspect",
         description="Inspect video and audio streams without modifying the media.",
     )
-    parser.add_argument("media", metavar="MEDIA", help="media file to inspect")
+    parser.add_argument(
+        "media", nargs="+", metavar="MEDIA", help="one or more media files to inspect"
+    )
     return parser
 
 
@@ -283,12 +285,20 @@ def _select_processing_audio(
 def _run_inspect(argv: Sequence[str]) -> int:
     parser = build_inspect_parser()
     arguments = parser.parse_args(argv)
-    try:
-        info = probe_media(Path(arguments.media))
-    except MediaProbeError as error:
-        parser.exit(1, f"{parser.prog}: error: {error}\n")
-    print(format_inspection(info))
-    return 0
+    inspections = []
+    failed = False
+    for media in arguments.media:
+        path = Path(media)
+        try:
+            info = probe_media(path)
+        except MediaProbeError as error:
+            print(f"{parser.prog}: error: {path}: {error}", file=sys.stderr)
+            failed = True
+            continue
+        inspections.append(format_inspection(info))
+    if inspections:
+        print("\n\n".join(inspections))
+    return int(failed)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

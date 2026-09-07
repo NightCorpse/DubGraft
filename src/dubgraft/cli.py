@@ -6,7 +6,11 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from dubgraft import __version__
-from dubgraft.config import ProcessingConfig
+from dubgraft.config import (
+    ConfigurationError,
+    ProcessingConfig,
+    validate_processing_config,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -73,7 +77,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not arguments:
         parser.print_help()
         return 0
-    parse_processing_config(arguments, parser)
+    config = parse_processing_config(arguments, parser)
+    try:
+        validate_processing_config(config)
+    except ConfigurationError as error:
+        parser.error(str(error))
     return 0
 
 

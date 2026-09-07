@@ -8,6 +8,17 @@ from dubgraft.config import ProcessingConfig
 from dubgraft.media import MediaInfo, MediaProbeError, MediaStream
 
 
+def single_audio_info(path: Path) -> MediaInfo:
+    return MediaInfo(
+        path=path,
+        container="matroska,webm",
+        duration=None,
+        size=None,
+        bit_rate=None,
+        streams=(MediaStream(index=1, kind="audio", codec="eac3"),),
+    )
+
+
 def test_cli_without_arguments_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
     assert main([]) == 0
 
@@ -117,12 +128,15 @@ def test_cli_requires_all_processing_paths(
     assert "OUTPUT is required" in capsys.readouterr().err
 
 
-def test_cli_accepts_valid_media_paths(tmp_path: Path) -> None:
+def test_cli_accepts_valid_media_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     source = tmp_path / "source.mkv"
     target = tmp_path / "target.mkv"
     output = tmp_path / "output.mkv"
     source.touch()
     target.touch()
+    monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
 
     assert main([str(source), str(target), str(output)]) == 0
 
@@ -142,7 +156,9 @@ def test_cli_rejects_missing_input(
 
 
 def test_cli_requires_overwrite_for_existing_output(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     source = tmp_path / "source.mkv"
     target = tmp_path / "target.mkv"
@@ -150,6 +166,7 @@ def test_cli_requires_overwrite_for_existing_output(
     source.touch()
     target.touch()
     output.touch()
+    monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
 
     with pytest.raises(SystemExit) as exit_info:
         main([str(source), str(target), str(output)])
@@ -157,6 +174,81 @@ def test_cli_requires_overwrite_for_existing_output(
     assert exit_info.value.code == 2
     assert "use --overwrite to replace it" in capsys.readouterr().err
     assert main([str(source), str(target), str(output), "--overwrite"]) == 0
+
+
+def test_cli_selects_explicit_audio_stream_indices(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+
+    def probe(path: Path) -> MediaInfo:
+        return MediaInfo(
+            path=path,
+            container="matroska,webm",
+            duration=None,
+            size=None,
+            bit_rate=None,
+            streams=(
+                MediaStream(index=1, kind="audio", codec="aac"),
+                MediaStream(index=3, kind="audio", codec="eac3"),
+            ),
+        )
+
+    monkeypatch.setattr("dubgraft.cli.probe_media", probe)
+
+    assert (
+        main(
+            [
+                str(source),
+                "-S",
+                "1",
+                str(target),
+                "-T",
+                "3",
+                str(tmp_path / "output.mkv"),
+            ]
+        )
+        == 0
+    )
+
+
+def test_cli_lists_audio_candidates_when_selection_is_ambiguous(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+
+    def probe(path: Path) -> MediaInfo:
+        return MediaInfo(
+            path=path,
+            container="matroska,webm",
+            duration=None,
+            size=None,
+            bit_rate=None,
+            streams=(
+                MediaStream(index=1, kind="audio", codec="aac", language="por"),
+                MediaStream(index=2, kind="audio", codec="eac3", language="eng"),
+            ),
+        )
+
+    monkeypatch.setattr("dubgraft.cli.probe_media", probe)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main([str(source), str(target), str(tmp_path / "output.mkv")])
+
+    assert exit_info.value.code == 2
+    error = capsys.readouterr().err
+    assert "could not select Source audio" in error
+    assert "[1] aac | por" in error
+    assert "[2] eac3 | eng" in error
+    assert "Use -S INDEX or --source-audio INDEX" in error
 
 
 @pytest.mark.parametrize("input_name", ["source", "target"])

@@ -11,7 +11,14 @@ from dubgraft.config import (
     ProcessingConfig,
     validate_processing_config,
 )
-from dubgraft.media import MediaInfo, MediaProbeError, MediaStream, probe_media
+from dubgraft.media import (
+    AudioSelectionError,
+    MediaInfo,
+    MediaProbeError,
+    MediaStream,
+    probe_media,
+    select_audio_stream,
+)
 
 
 def _stream_index(value: str) -> int:
@@ -250,6 +257,29 @@ def format_inspection(info: MediaInfo) -> str:
     return "\n".join(lines)
 
 
+def _select_processing_audio(
+    parser: argparse.ArgumentParser,
+    role: str,
+    path: Path,
+    index: int | None,
+    option: str,
+) -> MediaStream:
+    try:
+        info = probe_media(path)
+    except MediaProbeError as error:
+        parser.exit(1, f"{parser.prog}: error: could not inspect {role}: {error}\n")
+
+    try:
+        return select_audio_stream(info, index)
+    except AudioSelectionError as error:
+        lines = [f"{parser.prog}: error: could not select {role} audio: {error}"]
+        if error.candidates:
+            lines.append("Available audio streams:")
+            lines.extend(f"  {_format_audio(stream)}" for stream in error.candidates)
+            lines.append(f"Use {option} INDEX to select one.")
+        parser.exit(2, "\n".join(lines) + "\n")
+
+
 def _run_inspect(argv: Sequence[str]) -> int:
     parser = build_inspect_parser()
     arguments = parser.parse_args(argv)
@@ -271,9 +301,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_inspect(arguments[1:])
     config = parse_processing_config(arguments, parser)
     try:
-        validate_processing_config(config)
+        config = validate_processing_config(config)
     except ConfigurationError as error:
         parser.error(str(error))
+    _select_processing_audio(
+        parser,
+        "Source",
+        config.source,
+        config.source_audio_index,
+        "-S INDEX or --source-audio",
+    )
+    _select_processing_audio(
+        parser,
+        "Target",
+        config.target,
+        config.target_audio_index,
+        "-T INDEX or --target-audio",
+    )
     return 0
 
 

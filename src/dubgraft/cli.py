@@ -13,11 +13,13 @@ from dubgraft.config import (
 )
 from dubgraft.media import (
     AudioSelectionError,
+    FFmpegError,
     MediaInfo,
     MediaProbeError,
     MediaStream,
     probe_media,
     select_audio_stream,
+    validate_ffmpeg,
 )
 
 
@@ -314,6 +316,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         config = validate_processing_config(config)
     except ConfigurationError as error:
         parser.error(str(error))
+    try:
+        validate_ffmpeg()
+    except FFmpegError as error:
+        parser.exit(1, f"{parser.prog}: error: {error}\n")
     _select_processing_audio(
         parser,
         "Source",

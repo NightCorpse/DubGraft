@@ -13,6 +13,10 @@ class MediaProbeError(RuntimeError):
     """Raised when media metadata cannot be read safely."""
 
 
+class FFmpegError(RuntimeError):
+    """Raised when FFmpeg is unavailable or cannot be executed safely."""
+
+
 class AudioSelectionError(ValueError):
     """Raised when an audio stream cannot be selected unambiguously."""
 
@@ -58,6 +62,41 @@ class MediaInfo:
     size: int | None
     bit_rate: int | None
     streams: tuple[MediaStream, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FFmpegInfo:
+    executable: Path
+    version: str
+
+
+def validate_ffmpeg() -> FFmpegInfo:
+    """Locate FFmpeg and verify that the executable responds successfully."""
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise FFmpegError("ffmpeg was not found in PATH")
+
+    command = [ffmpeg, "-version"]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise FFmpegError(f"could not execute ffmpeg: {error}") from error
+
+    if result.returncode != 0:
+        detail = result.stderr.strip() or f"ffmpeg exited with code {result.returncode}"
+        raise FFmpegError(detail)
+    first_line = result.stdout.splitlines()
+    if not first_line:
+        raise FFmpegError("ffmpeg returned no version information")
+    return FFmpegInfo(executable=Path(ffmpeg), version=first_line[0])
 
 
 def select_audio_stream(info: MediaInfo, index: int | None = None) -> MediaStream:

@@ -5,7 +5,12 @@ import pytest
 from dubgraft import __version__
 from dubgraft.cli import main, parse_processing_config
 from dubgraft.config import ProcessingConfig
-from dubgraft.media import MediaInfo, MediaProbeError, MediaStream
+from dubgraft.media import FFmpegError, MediaInfo, MediaProbeError, MediaStream
+
+
+@pytest.fixture
+def available_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("dubgraft.cli.validate_ffmpeg", lambda: None)
 
 
 def single_audio_info(path: Path) -> MediaInfo:
@@ -129,7 +134,7 @@ def test_cli_requires_all_processing_paths(
 
 
 def test_cli_accepts_valid_media_paths(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, available_ffmpeg: None
 ) -> None:
     source = tmp_path / "source.mkv"
     target = tmp_path / "target.mkv"
@@ -159,6 +164,7 @@ def test_cli_requires_overwrite_for_existing_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    available_ffmpeg: None,
 ) -> None:
     source = tmp_path / "source.mkv"
     target = tmp_path / "target.mkv"
@@ -177,7 +183,7 @@ def test_cli_requires_overwrite_for_existing_output(
 
 
 def test_cli_selects_explicit_audio_stream_indices(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, available_ffmpeg: None
 ) -> None:
     source = tmp_path / "source.mkv"
     target = tmp_path / "target.mkv"
@@ -219,6 +225,7 @@ def test_cli_lists_audio_candidates_when_selection_is_ambiguous(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    available_ffmpeg: None,
 ) -> None:
     source = tmp_path / "source.mkv"
     target = tmp_path / "target.mkv"
@@ -249,6 +256,28 @@ def test_cli_lists_audio_candidates_when_selection_is_ambiguous(
     assert "[1] aac | por" in error
     assert "[2] eac3 | eng" in error
     assert "Use -S INDEX or --source-audio INDEX" in error
+
+
+def test_cli_reports_unavailable_ffmpeg(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+
+    def fail_validation() -> None:
+        raise FFmpegError("ffmpeg was not found in PATH")
+
+    monkeypatch.setattr("dubgraft.cli.validate_ffmpeg", fail_validation)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main([str(source), str(target), str(tmp_path / "output.mkv")])
+
+    assert exit_info.value.code == 1
+    assert "ffmpeg was not found in PATH" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("input_name", ["source", "target"])

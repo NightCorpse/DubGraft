@@ -6,11 +6,14 @@ import pytest
 
 from dubgraft.media import (
     AudioSelectionError,
+    FFmpegError,
+    FFmpegInfo,
     MediaInfo,
     MediaProbeError,
     MediaStream,
     probe_media,
     select_audio_stream,
+    validate_ffmpeg,
 )
 
 
@@ -23,6 +26,50 @@ def media_info(*streams: MediaStream) -> MediaInfo:
         bit_rate=None,
         streams=streams,
     )
+
+
+def test_validate_ffmpeg_reads_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    monkeypatch.setattr("dubgraft.media.shutil.which", lambda name: "/bin/ffmpeg")
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, "ffmpeg version 9.0\n", "")
+
+    monkeypatch.setattr("dubgraft.media.subprocess.run", fake_run)
+
+    assert validate_ffmpeg() == FFmpegInfo(Path("/bin/ffmpeg"), "ffmpeg version 9.0")
+    command, options = calls[0]
+    assert command == ["/bin/ffmpeg", "-version"]
+    assert options["timeout"] == 10
+    assert options["check"] is False
+    assert "shell" not in options
+
+
+def test_validate_ffmpeg_requires_executable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("dubgraft.media.shutil.which", lambda name: None)
+
+    with pytest.raises(FFmpegError, match="ffmpeg was not found in PATH"):
+        validate_ffmpeg()
+
+
+@pytest.mark.parametrize(
+    ("result", "message"),
+    [
+        (subprocess.CompletedProcess([], 1, "", "broken install"), "broken install"),
+        (subprocess.CompletedProcess([], 0, "", ""), "no version information"),
+    ],
+)
+def test_validate_ffmpeg_rejects_invalid_response(
+    result: subprocess.CompletedProcess[str],
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("dubgraft.media.shutil.which", lambda name: "/bin/ffmpeg")
+    monkeypatch.setattr("dubgraft.media.subprocess.run", lambda *args, **kwargs: result)
+
+    with pytest.raises(FFmpegError, match=message):
+        validate_ffmpeg()
 
 
 def test_select_audio_stream_selects_the_only_audio_automatically() -> None:

@@ -10,6 +10,8 @@ class ProcessingConfig:
     target: Path
     output: Path
     overwrite: bool = False
+    source_audio_index: int | None = None
+    target_audio_index: int | None = None
 
 
 class ConfigurationError(ValueError):
@@ -45,4 +47,6 @@ def validate_processing_config(config: ProcessingConfig) -> ProcessingConfig:
         target=target,
         output=output,
         overwrite=config.overwrite,
+        source_audio_index=config.source_audio_index,
+        target_audio_index=config.target_audio_index,
     )

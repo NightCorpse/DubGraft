@@ -43,6 +43,54 @@ def test_cli_accepts_all_processing_forms(arguments: list[str]) -> None:
     )
 
 
+def test_cli_accepts_long_audio_stream_options() -> None:
+    config = parse_processing_config(
+        [
+            "source.mkv",
+            "target.mkv",
+            "output.mkv",
+            "--source-audio",
+            "1",
+            "--target-audio",
+            "4",
+        ]
+    )
+
+    assert config.source_audio_index == 1
+    assert config.target_audio_index == 4
+
+
+def test_cli_accepts_short_audio_options_between_media_paths() -> None:
+    config = parse_processing_config(
+        ["source.mkv", "-S", "1", "target.mkv", "-T", "4", "output.mkv"]
+    )
+
+    assert config.source == Path("source.mkv")
+    assert config.source_audio_index == 1
+    assert config.target == Path("target.mkv")
+    assert config.target_audio_index == 4
+    assert config.output == Path("output.mkv")
+
+
+@pytest.mark.parametrize("value", ["-1", "audio"])
+def test_cli_rejects_invalid_audio_stream_index(
+    value: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        parse_processing_config(
+            [
+                "source.mkv",
+                "target.mkv",
+                "output.mkv",
+                "--source-audio",
+                value,
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "must be a non-negative integer" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     ("option", "role"),
     [("--source", "SOURCE"), ("--target", "TARGET"), ("--output", "OUTPUT")],

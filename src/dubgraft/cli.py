@@ -14,6 +14,16 @@ from dubgraft.config import (
 from dubgraft.media import MediaInfo, MediaProbeError, MediaStream, probe_media
 
 
+def _stream_index(value: str) -> int:
+    try:
+        index = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be a non-negative integer") from error
+    if index < 0:
+        raise argparse.ArgumentTypeError("must be a non-negative integer")
+    return index
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dubgraft",
@@ -32,6 +42,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-s", "--source", dest="explicit_source", metavar="PATH")
     parser.add_argument("-t", "--target", dest="explicit_target", metavar="PATH")
     parser.add_argument("-o", "--output", dest="explicit_output", metavar="PATH")
+    parser.add_argument(
+        "-S",
+        "--source-audio",
+        type=_stream_index,
+        metavar="INDEX",
+        help="global stream index of the Source audio",
+    )
+    parser.add_argument(
+        "-T",
+        "--target-audio",
+        type=_stream_index,
+        metavar="INDEX",
+        help="global stream index of the Target reference audio",
+    )
     parser.add_argument(
         "-y",
         "--overwrite",
@@ -68,7 +92,7 @@ def parse_processing_config(
     argv: Sequence[str], parser: argparse.ArgumentParser | None = None
 ) -> ProcessingConfig:
     parser = parser or build_parser()
-    arguments = parser.parse_args(argv)
+    arguments = parser.parse_intermixed_args(argv)
     return ProcessingConfig(
         source=_resolve_argument(
             parser, "SOURCE", arguments.positional_source, arguments.explicit_source
@@ -80,6 +104,8 @@ def parse_processing_config(
             parser, "OUTPUT", arguments.positional_output, arguments.explicit_output
         ),
         overwrite=arguments.overwrite,
+        source_audio_index=arguments.source_audio,
+        target_audio_index=arguments.target_audio,
     )
 
 

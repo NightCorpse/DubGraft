@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dubgraft"
+version = "0.1.0.dev0"
+description = "Align and graft dubbed audio across media releases using distributed audio anchors."
+requires-python = ">=3.11"
+license = "GPL-3.0-only"
+authors = [
+  { name = "NightCorpse" },
+]
+dependencies = [
+  "numpy>=1.26,<3",
+  "scipy>=1.12,<2",
+]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Environment :: Console",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Multimedia :: Sound/Audio",
+  "Topic :: Multimedia :: Video",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<10",
+]
+
+[project.scripts]
+dubgraft = "dubgraft.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]

@@ -5,6 +5,7 @@ import pytest
 from dubgraft import __version__
 from dubgraft.cli import main, parse_processing_config
 from dubgraft.config import ProcessingConfig
+from dubgraft.media import MediaInfo, MediaProbeError, MediaStream
 
 
 def test_cli_without_arguments_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
@@ -141,3 +142,81 @@ def test_cli_rejects_missing_output_directory(
 
     assert exit_info.value.code == 2
     assert "Output directory does not exist" in capsys.readouterr().err
+
+
+def test_cli_inspect_prints_video_audio_and_other_stream_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    media = tmp_path / "episode.mkv"
+    info = MediaInfo(
+        path=media,
+        container="matroska,webm",
+        duration=3217.952,
+        size=1_994_237_191,
+        bit_rate=4_957_779,
+        streams=(
+            MediaStream(
+                index=0,
+                kind="video",
+                codec="hevc",
+                profile="Main 10",
+                width=3840,
+                height=1920,
+                frame_rate=24000 / 1001,
+                pixel_format="yuv420p10le",
+                color_transfer="smpte2084",
+                default=True,
+                dolby_vision="Dolby Vision P8.1",
+            ),
+            MediaStream(
+                index=1,
+                kind="audio",
+                codec="eac3",
+                profile="Dolby Digital Plus + Dolby Atmos",
+                sample_rate=48000,
+                channels=6,
+                channel_layout="5.1(side)",
+                bit_rate=640000,
+                language="eng",
+                default=True,
+            ),
+            MediaStream(index=2, kind="subtitle", codec="subrip"),
+            MediaStream(index=3, kind="subtitle", codec="subrip"),
+        ),
+    )
+    monkeypatch.setattr("dubgraft.cli.probe_media", lambda path: info)
+
+    assert main(["inspect", str(media)]) == 0
+
+    output = capsys.readouterr().out
+    assert "Media: episode.mkv" in output
+    assert "[0] hevc Main 10 | 3840x1920 | 23.976 fps" in output
+    assert "Dolby Vision P8.1 / HDR10" in output
+    assert "[1] eac3 Atmos | 5.1(side) | 48 kHz | 640 kb/s | eng | default" in output
+    assert "2 subtitles (preserved)" in output
+    assert "subrip" not in output
+
+
+def test_cli_inspect_reports_probe_errors(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def fail_probe(path: Path) -> MediaInfo:
+        raise MediaProbeError("ffprobe was not found in PATH")
+
+    monkeypatch.setattr("dubgraft.cli.probe_media", fail_probe)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["inspect", "episode.mkv"])
+
+    assert exit_info.value.code == 1
+    assert "ffprobe was not found in PATH" in capsys.readouterr().err
+
+
+def test_cli_inspect_help(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main(["inspect", "--help"])
+
+    assert exit_info.value.code == 0
+    assert "usage: dubgraft inspect" in capsys.readouterr().out

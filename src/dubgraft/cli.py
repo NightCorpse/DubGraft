@@ -11,12 +11,15 @@ from dubgraft.config import (
     ProcessingConfig,
     validate_processing_config,
 )
+from dubgraft.media import MediaInfo, MediaProbeError, MediaStream, probe_media
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dubgraft",
         description="Align and graft dubbed audio across media releases using distributed audio anchors.",
+        epilog="command:\n  inspect MEDIA         show video, audio, and stream summary",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--version",
@@ -35,6 +38,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="allow replacing an existing output file",
     )
+    return parser
+
+
+def build_inspect_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="dubgraft inspect",
+        description="Inspect video and audio streams without modifying the media.",
+    )
+    parser.add_argument("media", metavar="MEDIA", help="media file to inspect")
     return parser
 
 
@@ -71,12 +83,166 @@ def parse_processing_config(
     )
 
 
+def _format_duration(seconds: float | None) -> str:
+    if seconds is None:
+        return "unknown"
+    milliseconds = round(seconds * 1000)
+    hours, remainder = divmod(milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    whole_seconds, milliseconds = divmod(remainder, 1000)
+    return f"{hours:02}:{minutes:02}:{whole_seconds:02}.{milliseconds:03}"
+
+
+def _format_size(size: int | None) -> str:
+    if size is None:
+        return "unknown"
+    value = float(size)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or unit == "TiB":
+            return f"{value:.2f} {unit}" if unit != "B" else f"{size} B"
+        value /= 1024
+    return f"{size} B"
+
+
+def _format_bit_rate(bit_rate: int | None) -> str | None:
+    if bit_rate is None:
+        return None
+    if bit_rate >= 1_000_000:
+        return f"{bit_rate / 1_000_000:.2f} Mb/s"
+    return f"{bit_rate / 1000:.0f} kb/s"
+
+
+def _stream_flags(stream: MediaStream) -> list[str]:
+    flags = []
+    if stream.default:
+        flags.append("default")
+    if stream.forced:
+        flags.append("forced")
+    if stream.hearing_impaired:
+        flags.append("hearing impaired")
+    if stream.attached_picture:
+        flags.append("attached picture")
+    return flags
+
+
+def _format_video(stream: MediaStream) -> str:
+    codec = stream.codec
+    if stream.profile:
+        codec += f" {stream.profile}"
+    details = [f"[{stream.index}] {codec}"]
+    if stream.width is not None and stream.height is not None:
+        details.append(f"{stream.width}x{stream.height}")
+    if stream.frame_rate is not None:
+        details.append(f"{stream.frame_rate:.3f} fps")
+    if stream.pixel_format:
+        details.append(stream.pixel_format)
+    if stream.dolby_vision:
+        dynamic_range = stream.dolby_vision
+        if stream.color_transfer == "smpte2084":
+            dynamic_range += " / HDR10"
+        details.append(dynamic_range)
+    elif stream.color_transfer == "smpte2084":
+        details.append("HDR10")
+    elif stream.color_transfer == "arib-std-b67":
+        details.append("HLG")
+    elif stream.color_space == "bt709":
+        details.append("BT.709")
+    details.extend(_stream_flags(stream))
+    return " | ".join(details)
+
+
+def _format_audio(stream: MediaStream) -> str:
+    codec = stream.codec
+    if stream.profile:
+        profile = "Atmos" if "Atmos" in stream.profile else stream.profile
+        codec += f" {profile}"
+    details = [f"[{stream.index}] {codec}"]
+    if stream.channel_layout:
+        details.append(stream.channel_layout)
+    elif stream.channels is not None:
+        details.append(f"{stream.channels} channels")
+    if stream.sample_rate is not None:
+        details.append(f"{stream.sample_rate / 1000:g} kHz")
+    bit_rate = _format_bit_rate(stream.bit_rate)
+    if bit_rate:
+        details.append(bit_rate)
+    if stream.language:
+        details.append(stream.language)
+    if stream.title:
+        details.append(stream.title)
+    details.extend(_stream_flags(stream))
+    return " | ".join(details)
+
+
+def _plural(count: int, singular: str, plural: str | None = None) -> str:
+    label = singular if count == 1 else plural or f"{singular}s"
+    return f"{count} {label}"
+
+
+def format_inspection(info: MediaInfo) -> str:
+    container = info.container
+    if "matroska" in container:
+        container = "Matroska/WebM"
+    elif "mp4" in container or container.startswith("mov"):
+        container = "MP4/MOV"
+
+    lines = [
+        f"Media: {info.path.name}",
+        f"Container: {container}",
+        f"Duration: {_format_duration(info.duration)}",
+        f"Size: {_format_size(info.size)}",
+        f"Streams: {len(info.streams)}",
+    ]
+    bit_rate = _format_bit_rate(info.bit_rate)
+    if bit_rate:
+        lines.insert(4, f"Bit rate: {bit_rate}")
+
+    videos = [stream for stream in info.streams if stream.kind == "video"]
+    audios = [stream for stream in info.streams if stream.kind == "audio"]
+    if videos:
+        lines.extend(("", "Video"))
+        lines.extend(f"  {_format_video(stream)}" for stream in videos)
+    if audios:
+        lines.extend(("", "Audio"))
+        lines.extend(f"  {_format_audio(stream)}" for stream in audios)
+
+    other_counts: dict[str, int] = {}
+    for stream in info.streams:
+        if stream.kind in {"video", "audio"}:
+            continue
+        other_counts[stream.kind] = other_counts.get(stream.kind, 0) + 1
+    if other_counts:
+        names = {
+            "subtitle": ("subtitle", "subtitles"),
+            "attachment": ("attachment", "attachments"),
+            "data": ("data stream", "data streams"),
+        }
+        lines.extend(("", "Other streams"))
+        for kind, count in sorted(other_counts.items()):
+            singular, plural = names.get(kind, (f"{kind} stream", f"{kind} streams"))
+            lines.append(f"  {_plural(count, singular, plural)} (preserved)")
+    return "\n".join(lines)
+
+
+def _run_inspect(argv: Sequence[str]) -> int:
+    parser = build_inspect_parser()
+    arguments = parser.parse_args(argv)
+    try:
+        info = probe_media(Path(arguments.media))
+    except MediaProbeError as error:
+        parser.exit(1, f"{parser.prog}: error: {error}\n")
+    print(format_inspection(info))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     arguments = list(argv) if argv is not None else sys.argv[1:]
     if not arguments:
         parser.print_help()
         return 0
+    if arguments[0] == "inspect":
+        return _run_inspect(arguments[1:])
     config = parse_processing_config(arguments, parser)
     try:
         validate_processing_config(config)

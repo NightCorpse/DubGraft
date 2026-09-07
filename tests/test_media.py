@@ -4,7 +4,70 @@ from pathlib import Path
 
 import pytest
 
-from dubgraft.media import MediaProbeError, probe_media
+from dubgraft.media import (
+    AudioSelectionError,
+    MediaInfo,
+    MediaProbeError,
+    MediaStream,
+    probe_media,
+    select_audio_stream,
+)
+
+
+def media_info(*streams: MediaStream) -> MediaInfo:
+    return MediaInfo(
+        path=Path("episode.mkv"),
+        container="matroska,webm",
+        duration=None,
+        size=None,
+        bit_rate=None,
+        streams=streams,
+    )
+
+
+def test_select_audio_stream_selects_the_only_audio_automatically() -> None:
+    audio = MediaStream(index=2, kind="audio", codec="eac3")
+
+    assert select_audio_stream(media_info(audio)) is audio
+
+
+def test_select_audio_stream_uses_global_stream_index() -> None:
+    video = MediaStream(index=0, kind="video", codec="hevc")
+    first_audio = MediaStream(index=1, kind="audio", codec="aac")
+    second_audio = MediaStream(index=4, kind="audio", codec="eac3")
+
+    assert select_audio_stream(
+        media_info(video, first_audio, second_audio), index=4
+    ) is second_audio
+
+
+def test_select_audio_stream_reports_ambiguous_audio_candidates() -> None:
+    audios = (
+        MediaStream(index=1, kind="audio", codec="aac"),
+        MediaStream(index=2, kind="audio", codec="eac3"),
+    )
+
+    with pytest.raises(AudioSelectionError, match="multiple audio streams") as error:
+        select_audio_stream(media_info(*audios))
+
+    assert error.value.candidates == audios
+
+
+def test_select_audio_stream_rejects_non_audio_index() -> None:
+    video = MediaStream(index=0, kind="video", codec="hevc")
+    audio = MediaStream(index=1, kind="audio", codec="eac3")
+
+    with pytest.raises(AudioSelectionError, match="index 0 is video, not audio"):
+        select_audio_stream(media_info(video, audio), index=0)
+
+
+def test_select_audio_stream_rejects_missing_audio_and_unknown_index() -> None:
+    video_only = media_info(MediaStream(index=0, kind="video", codec="hevc"))
+
+    with pytest.raises(AudioSelectionError, match="has no audio streams"):
+        select_audio_stream(video_only)
+    with pytest.raises(AudioSelectionError, match="index 3 does not exist"):
+        select_audio_stream(video_only, index=3)
 
 
 def test_probe_media_reads_ffprobe_json(

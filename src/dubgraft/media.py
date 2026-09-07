@@ -13,6 +13,16 @@ class MediaProbeError(RuntimeError):
     """Raised when media metadata cannot be read safely."""
 
 
+class AudioSelectionError(ValueError):
+    """Raised when an audio stream cannot be selected unambiguously."""
+
+    def __init__(
+        self, message: str, candidates: tuple["MediaStream", ...] = ()
+    ) -> None:
+        super().__init__(message)
+        self.candidates = candidates
+
+
 @dataclass(frozen=True, slots=True)
 class MediaStream:
     index: int
@@ -48,6 +58,29 @@ class MediaInfo:
     size: int | None
     bit_rate: int | None
     streams: tuple[MediaStream, ...]
+
+
+def select_audio_stream(info: MediaInfo, index: int | None = None) -> MediaStream:
+    """Select one audio stream using its global FFprobe stream index."""
+    candidates = tuple(stream for stream in info.streams if stream.kind == "audio")
+    if index is None:
+        if len(candidates) == 1:
+            return candidates[0]
+        if not candidates:
+            raise AudioSelectionError("media has no audio streams")
+        raise AudioSelectionError(
+            "media has multiple audio streams; select one by index", candidates
+        )
+
+    for stream in info.streams:
+        if stream.index != index:
+            continue
+        if stream.kind != "audio":
+            raise AudioSelectionError(
+                f"stream index {index} is {stream.kind}, not audio", candidates
+            )
+        return stream
+    raise AudioSelectionError(f"stream index {index} does not exist", candidates)
 
 
 def _optional_int(value: Any) -> int | None:

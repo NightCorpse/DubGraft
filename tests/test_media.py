@@ -2,6 +2,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from dubgraft.media import (
@@ -11,6 +12,7 @@ from dubgraft.media import (
     MediaInfo,
     MediaProbeError,
     MediaStream,
+    extract_audio_window,
     probe_media,
     select_audio_stream,
     validate_ffmpeg,
@@ -70,6 +72,68 @@ def test_validate_ffmpeg_rejects_invalid_response(
 
     with pytest.raises(FFmpegError, match=message):
         validate_ffmpeg()
+
+
+def test_extract_audio_window_reads_selected_stream_as_normalized_mono_pcm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media = tmp_path / "episode.mkv"
+    media.touch()
+    pcm = np.array([-32768, 0, 16384, 32767], dtype=np.int16).tobytes()
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    monkeypatch.setattr("dubgraft.media.shutil.which", lambda name: "/bin/ffmpeg")
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, pcm, b"")
+
+    monkeypatch.setattr("dubgraft.media.subprocess.run", fake_run)
+
+    samples = extract_audio_window(media, 3, 12.5, 6)
+
+    assert samples.dtype == np.float32
+    assert samples == pytest.approx([-1.0, 0.0, 0.5, 32767 / 32768])
+    command, options = calls[0]
+    assert command[command.index("-map") + 1] == "0:3"
+    assert command[command.index("-ac") + 1] == "1"
+    assert command[command.index("-ar") + 1] == "22050"
+    assert command[-1] == "pipe:1"
+    assert options["timeout"] == 60
+    assert "shell" not in options
+
+
+def test_extract_audio_window_reports_ffmpeg_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media = tmp_path / "broken.mkv"
+    media.touch()
+    monkeypatch.setattr("dubgraft.media.shutil.which", lambda name: "/bin/ffmpeg")
+    monkeypatch.setattr(
+        "dubgraft.media.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 1, b"", b"invalid audio stream"
+        ),
+    )
+
+    with pytest.raises(FFmpegError, match="invalid audio stream"):
+        extract_audio_window(media, 4, 0, 6)
+
+
+def test_extract_audio_window_returns_empty_samples_after_media_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media = tmp_path / "episode.mkv"
+    media.touch()
+    monkeypatch.setattr("dubgraft.media.shutil.which", lambda name: "/bin/ffmpeg")
+    monkeypatch.setattr(
+        "dubgraft.media.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, b"", b""),
+    )
+
+    samples = extract_audio_window(media, 1, 4000, 6)
+
+    assert samples.dtype == np.float32
+    assert samples.size == 0
 
 
 def test_select_audio_stream_selects_the_only_audio_automatically() -> None:

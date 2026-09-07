@@ -1,7 +1,11 @@
 """Typed configuration for DubGraft processing."""
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
+
+
+ANALYSIS_SAMPLE_RATE = 22_050
 
 
 @dataclass(frozen=True, slots=True)
@@ -14,8 +18,36 @@ class ProcessingConfig:
     target_audio_index: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class MatchingConfig:
+    fingerprint_size_seconds: float = 6.0
+    scan_step_seconds: float = 20.0
+    search_radius_seconds: float = 75.0
+    confidence_threshold: float = 60.0
+
+
 class ConfigurationError(ValueError):
-    """Raised when processing paths violate the CLI safety contract."""
+    """Raised when DubGraft configuration violates its safety contract."""
+
+
+def validate_matching_config(config: MatchingConfig) -> MatchingConfig:
+    """Validate numeric matching parameters without changing their values."""
+    positive_values = (
+        ("fingerprint size", config.fingerprint_size_seconds),
+        ("scan step", config.scan_step_seconds),
+        ("search radius", config.search_radius_seconds),
+    )
+    for name, value in positive_values:
+        if not math.isfinite(value) or value <= 0:
+            raise ConfigurationError(f"{name} must be a positive finite number")
+    if (
+        not math.isfinite(config.confidence_threshold)
+        or config.confidence_threshold < 0
+    ):
+        raise ConfigurationError(
+            "confidence threshold must be a non-negative finite number"
+        )
+    return config
 
 
 def validate_processing_config(config: ProcessingConfig) -> ProcessingConfig:

@@ -1,12 +1,18 @@
 """Media metadata probing through FFprobe."""
 
 import json
+import math
 import shutil
 import subprocess
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
+
+import numpy as np
+from numpy.typing import NDArray
+
+from dubgraft.config import ANALYSIS_SAMPLE_RATE
 
 
 class MediaProbeError(RuntimeError):
@@ -70,11 +76,16 @@ class FFmpegInfo:
     version: str
 
 
-def validate_ffmpeg() -> FFmpegInfo:
-    """Locate FFmpeg and verify that the executable responds successfully."""
+def _ffmpeg_executable() -> str:
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
         raise FFmpegError("ffmpeg was not found in PATH")
+    return ffmpeg
+
+
+def validate_ffmpeg() -> FFmpegInfo:
+    """Locate FFmpeg and verify that the executable responds successfully."""
+    ffmpeg = _ffmpeg_executable()
 
     command = [ffmpeg, "-version"]
     try:
@@ -97,6 +108,65 @@ def validate_ffmpeg() -> FFmpegInfo:
     if not first_line:
         raise FFmpegError("ffmpeg returned no version information")
     return FFmpegInfo(executable=Path(ffmpeg), version=first_line[0])
+
+
+def extract_audio_window(
+    path: Path, stream_index: int, start: float, duration: float
+) -> NDArray[np.float32]:
+    """Decode one selected audio window to normalized mono PCM in memory."""
+    if stream_index < 0:
+        raise ValueError("audio stream index must be non-negative")
+    if not math.isfinite(start) or start < 0:
+        raise ValueError("audio window start must be a non-negative finite number")
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError("audio window duration must be a positive finite number")
+
+    media_path = path.expanduser().resolve()
+    if not media_path.is_file():
+        raise FFmpegError(f"Media file does not exist: {media_path}")
+    ffmpeg = _ffmpeg_executable()
+    command = [
+        ffmpeg,
+        "-v",
+        "error",
+        "-ss",
+        str(start),
+        "-t",
+        str(duration),
+        "-i",
+        str(media_path),
+        "-map",
+        f"0:{stream_index}",
+        "-f",
+        "s16le",
+        "-ac",
+        "1",
+        "-ar",
+        str(ANALYSIS_SAMPLE_RATE),
+        "pipe:1",
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise FFmpegError(f"could not extract audio with ffmpeg: {error}") from error
+
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise FFmpegError(detail or f"ffmpeg exited with code {result.returncode}")
+    if not result.stdout:
+        return np.array([], dtype=np.float32)
+    if len(result.stdout) % np.dtype(np.int16).itemsize:
+        raise FFmpegError("ffmpeg returned incomplete PCM audio data")
+
+    samples = np.frombuffer(result.stdout, dtype=np.int16).astype(np.float32)
+    samples /= 32768.0
+    return samples
 
 
 def select_audio_stream(info: MediaInfo, index: int | None = None) -> MediaStream:

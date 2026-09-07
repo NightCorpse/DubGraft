@@ -2,6 +2,7 @@
 
 import math
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 import numpy as np
@@ -11,7 +12,9 @@ from scipy import signal
 from dubgraft.config import (
     ANALYSIS_SAMPLE_RATE,
     MatchingConfig,
+    TimelineConfig,
     validate_matching_config,
+    validate_timeline_config,
 )
 from dubgraft.media import extract_audio_window
 
@@ -24,12 +27,34 @@ class AudioMatch:
     confidence: float
 
 
+class TimelineKind(str, Enum):
+    DIRECT = "direct"
+    STATIC = "static"
+    DRIFT = "drift"
+    INCONCLUSIVE = "inconclusive"
+
+
+@dataclass(frozen=True, slots=True)
+class TimelineAnalysis:
+    kind: TimelineKind
+    median_offset: float | None
+    slope: float | None
+    intercept: float | None
+    rms_residual: float | None
+    maximum_residual: float | None
+    coverage: float
+    stable_ratio: float
+    drift_over_duration: float | None
+    reason: str | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class MatchingResult:
     candidates: tuple[AudioMatch, ...]
     anchors: tuple[AudioMatch, ...]
     requested_anchor_count: int
     minimum_anchor_distance: float
+    timeline: TimelineAnalysis
 
 
 def correlate_audio(
@@ -146,6 +171,135 @@ def select_distributed_anchors(
     return tuple(sorted(selected, key=lambda item: item.target_time))
 
 
+def analyze_timeline(
+    anchors: tuple[AudioMatch, ...],
+    target_duration: float,
+    config: TimelineConfig = TimelineConfig(),
+) -> TimelineAnalysis:
+    """Fit and classify the temporal relationship represented by audio anchors."""
+    validate_timeline_config(config)
+    if not math.isfinite(target_duration) or target_duration <= 0:
+        raise ValueError("target duration must be a positive finite number")
+    for anchor in anchors:
+        values = (
+            anchor.target_time,
+            anchor.source_time,
+            anchor.offset,
+            anchor.confidence,
+        )
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("anchors must contain only finite values")
+        if not 0 <= anchor.target_time <= target_duration:
+            raise ValueError("anchor target time must be within the Target duration")
+        if not math.isclose(
+            anchor.offset,
+            anchor.source_time - anchor.target_time,
+            rel_tol=0,
+            abs_tol=1e-9,
+        ):
+            raise ValueError("anchor offset must equal Source time minus Target time")
+
+    if not anchors:
+        return TimelineAnalysis(
+            TimelineKind.INCONCLUSIVE,
+            None,
+            None,
+            None,
+            None,
+            None,
+            0.0,
+            0.0,
+            None,
+            "no anchors were found",
+        )
+
+    target_times = np.array([anchor.target_time for anchor in anchors])
+    source_times = np.array([anchor.source_time for anchor in anchors])
+    offsets = source_times - target_times
+    median_offset = float(np.median(offsets))
+    stable_ratio = float(
+        np.mean(np.abs(offsets - median_offset) <= config.stability_tolerance_seconds)
+    )
+    coverage = float((np.max(target_times) - np.min(target_times)) / target_duration)
+
+    if len(anchors) < config.minimum_anchor_count:
+        return TimelineAnalysis(
+            TimelineKind.INCONCLUSIVE,
+            median_offset,
+            None,
+            None,
+            None,
+            None,
+            coverage,
+            stable_ratio,
+            None,
+            f"at least {config.minimum_anchor_count} anchors are required",
+        )
+    if np.unique(target_times).size < 2:
+        raise ValueError("anchors must contain at least two distinct Target times")
+
+    stable_mask = (
+        np.abs(offsets - median_offset) <= config.stability_tolerance_seconds
+    )
+    stable_target_times = target_times[stable_mask]
+    use_stable_consensus = (
+        stable_ratio >= config.minimum_stable_ratio
+        and stable_target_times.size >= config.minimum_anchor_count
+        and np.unique(stable_target_times).size >= 2
+    )
+    if use_stable_consensus:
+        fit_target_times = target_times[stable_mask]
+        fit_source_times = source_times[stable_mask]
+    else:
+        fit_target_times = target_times
+        fit_source_times = source_times
+
+    coverage = float(
+        (np.max(fit_target_times) - np.min(fit_target_times)) / target_duration
+    )
+
+    slope, intercept = np.polyfit(fit_target_times, fit_source_times, 1)
+    predicted = slope * fit_target_times + intercept
+    residuals = fit_source_times - predicted
+    rms_residual = float(np.sqrt(np.mean(np.square(residuals))))
+    maximum_residual = float(np.max(np.abs(residuals)))
+    drift_over_duration = float((slope - 1.0) * target_duration)
+
+    values = (slope, intercept, rms_residual, maximum_residual, drift_over_duration)
+    if not all(math.isfinite(float(value)) for value in values):
+        raise ValueError("timeline regression produced non-finite values")
+
+    reason = None
+    if coverage < config.minimum_coverage:
+        kind = TimelineKind.INCONCLUSIVE
+        reason = "anchors do not cover enough of the Target timeline"
+    elif rms_residual > config.maximum_rms_residual_seconds:
+        kind = TimelineKind.INCONCLUSIVE
+        reason = "anchor residuals are too large for a linear timeline"
+    elif abs(drift_over_duration) > config.drift_tolerance_seconds:
+        kind = TimelineKind.DRIFT
+    elif stable_ratio < config.minimum_stable_ratio:
+        kind = TimelineKind.INCONCLUSIVE
+        reason = "anchor offsets are not sufficiently stable"
+    elif abs(median_offset) <= config.direct_tolerance_seconds:
+        kind = TimelineKind.DIRECT
+    else:
+        kind = TimelineKind.STATIC
+
+    return TimelineAnalysis(
+        kind,
+        median_offset,
+        float(slope),
+        float(intercept),
+        rms_residual,
+        maximum_residual,
+        coverage,
+        stable_ratio,
+        drift_over_duration,
+        reason,
+    )
+
+
 def match_audio_streams(
     source: Path,
     source_stream_index: int,
@@ -153,6 +307,7 @@ def match_audio_streams(
     target_stream_index: int,
     target_duration: float,
     config: MatchingConfig = MatchingConfig(),
+    timeline_config: TimelineConfig = TimelineConfig(),
 ) -> MatchingResult:
     """Run scanning and distributed anchor selection for two audio streams."""
     candidates = scan_audio_matches(
@@ -172,4 +327,5 @@ def match_audio_streams(
         anchor_count=anchor_count,
         minimum_distance=minimum_distance,
     )
-    return MatchingResult(candidates, anchors, anchor_count, minimum_distance)
+    timeline = analyze_timeline(anchors, target_duration, timeline_config)
+    return MatchingResult(candidates, anchors, anchor_count, minimum_distance, timeline)

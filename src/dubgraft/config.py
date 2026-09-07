@@ -26,6 +26,17 @@ class MatchingConfig:
     confidence_threshold: float = 60.0
 
 
+@dataclass(frozen=True, slots=True)
+class TimelineConfig:
+    minimum_anchor_count: int = 3
+    minimum_coverage: float = 0.6
+    stability_tolerance_seconds: float = 0.05
+    minimum_stable_ratio: float = 0.8
+    direct_tolerance_seconds: float = 0.02
+    drift_tolerance_seconds: float = 0.05
+    maximum_rms_residual_seconds: float = 0.05
+
+
 class ConfigurationError(ValueError):
     """Raised when DubGraft configuration violates its safety contract."""
 
@@ -47,6 +58,31 @@ def validate_matching_config(config: MatchingConfig) -> MatchingConfig:
         raise ConfigurationError(
             "confidence threshold must be a non-negative finite number"
         )
+    return config
+
+
+def validate_timeline_config(config: TimelineConfig) -> TimelineConfig:
+    """Validate temporal classification thresholds."""
+    if (
+        isinstance(config.minimum_anchor_count, bool)
+        or not isinstance(config.minimum_anchor_count, int)
+        or config.minimum_anchor_count < 2
+    ):
+        raise ConfigurationError("minimum anchor count must be at least 2")
+    for name, value in (
+        ("minimum coverage", config.minimum_coverage),
+        ("minimum stable ratio", config.minimum_stable_ratio),
+    ):
+        if not math.isfinite(value) or not 0 <= value <= 1:
+            raise ConfigurationError(f"{name} must be between 0 and 1")
+    for name, value in (
+        ("stability tolerance", config.stability_tolerance_seconds),
+        ("direct tolerance", config.direct_tolerance_seconds),
+        ("drift tolerance", config.drift_tolerance_seconds),
+        ("maximum RMS residual", config.maximum_rms_residual_seconds),
+    ):
+        if not math.isfinite(value) or value < 0:
+            raise ConfigurationError(f"{name} must be finite and non-negative")
     return config
 
 

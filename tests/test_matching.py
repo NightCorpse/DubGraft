@@ -3,12 +3,15 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from dubgraft.config import ANALYSIS_SAMPLE_RATE, MatchingConfig
+from dubgraft.config import ANALYSIS_SAMPLE_RATE, MatchingConfig, TimelineConfig
 from dubgraft.matching import (
     AudioMatch,
+    TimelineKind,
+    analyze_timeline,
     calculate_anchor_count,
     calculate_minimum_anchor_distance,
     correlate_audio,
+    match_audio_streams,
     scan_audio_matches,
     select_distributed_anchors,
 )
@@ -133,3 +136,146 @@ def test_select_distributed_anchors_keeps_strong_separated_candidates() -> None:
     )
 
     assert [anchor.target_time for anchor in anchors] == [260, 520]
+
+
+def timeline_anchors(*, slope: float = 1.0, intercept: float = 0.0) -> tuple[AudioMatch, ...]:
+    return tuple(
+        AudioMatch(
+            target_time=target_time,
+            source_time=slope * target_time + intercept,
+            offset=(slope - 1) * target_time + intercept,
+            confidence=100,
+        )
+        for target_time in (100.0, 500.0, 900.0)
+    )
+
+
+def test_analyze_timeline_classifies_direct_sync() -> None:
+    result = analyze_timeline(timeline_anchors(intercept=0.007), 1000)
+
+    assert result.kind is TimelineKind.DIRECT
+    assert result.median_offset == pytest.approx(0.007)
+    assert result.slope == pytest.approx(1)
+    assert result.coverage == pytest.approx(0.8)
+    assert result.stable_ratio == pytest.approx(1)
+    assert result.rms_residual == pytest.approx(0, abs=1e-12)
+
+
+def test_analyze_timeline_classifies_static_offset() -> None:
+    result = analyze_timeline(timeline_anchors(intercept=2), 1000)
+
+    assert result.kind is TimelineKind.STATIC
+    assert result.median_offset == pytest.approx(2)
+    assert result.drift_over_duration == pytest.approx(0, abs=1e-9)
+
+
+def test_analyze_timeline_classifies_linear_drift() -> None:
+    result = analyze_timeline(timeline_anchors(slope=1.001), 1000)
+
+    assert result.kind is TimelineKind.DRIFT
+    assert result.slope == pytest.approx(1.001)
+    assert result.drift_over_duration == pytest.approx(1)
+    assert result.rms_residual == pytest.approx(0, abs=1e-9)
+
+
+def test_analyze_timeline_is_inconclusive_with_too_few_anchors() -> None:
+    result = analyze_timeline(timeline_anchors()[:2], 1000)
+
+    assert result.kind is TimelineKind.INCONCLUSIVE
+    assert result.reason == "at least 3 anchors are required"
+    assert result.slope is None
+
+
+def test_analyze_timeline_is_inconclusive_without_enough_coverage() -> None:
+    anchors = tuple(
+        AudioMatch(time, time, 0, 100) for time in (100.0, 200.0, 300.0)
+    )
+
+    result = analyze_timeline(anchors, 1000)
+
+    assert result.kind is TimelineKind.INCONCLUSIVE
+    assert result.reason == "anchors do not cover enough of the Target timeline"
+
+
+def test_analyze_timeline_rejects_non_linear_anchor_residuals() -> None:
+    anchors = (
+        AudioMatch(100, 100, 0, 100),
+        AudioMatch(400, 402, 2, 100),
+        AudioMatch(700, 699, -1, 100),
+        AudioMatch(900, 903, 3, 100),
+    )
+
+    result = analyze_timeline(anchors, 1000)
+
+    assert result.kind is TimelineKind.INCONCLUSIVE
+    assert result.reason == "anchor residuals are too large for a linear timeline"
+
+
+def test_analyze_timeline_ignores_a_minority_offset_outlier() -> None:
+    anchors = tuple(
+        AudioMatch(time, time, 0, 100) for time in range(100, 1000, 100)
+    ) + (AudioMatch(1000, 1000.15, 0.15, 100),)
+
+    result = analyze_timeline(anchors, 1100)
+
+    assert result.kind is TimelineKind.DIRECT
+    assert result.stable_ratio == pytest.approx(0.9)
+    assert result.slope == pytest.approx(1)
+
+
+def test_analyze_timeline_excludes_outliers_from_coverage() -> None:
+    anchors = tuple(
+        AudioMatch(time, time, 0, 100) for time in range(100, 301, 25)
+    ) + (AudioMatch(900, 900.15, 0.15, 100),)
+
+    result = analyze_timeline(anchors, 1000)
+
+    assert result.kind is TimelineKind.INCONCLUSIVE
+    assert result.coverage == pytest.approx(0.2)
+    assert result.reason == "anchors do not cover enough of the Target timeline"
+
+
+def test_analyze_timeline_falls_back_when_stable_consensus_is_too_small() -> None:
+    anchors = (
+        AudioMatch(100, 100.1, 0.1, 100),
+        AudioMatch(500, 500.2, 0.2, 100),
+        AudioMatch(900, 900.3, 0.3, 100),
+    )
+
+    result = analyze_timeline(
+        anchors,
+        1000,
+        TimelineConfig(minimum_stable_ratio=0, stability_tolerance_seconds=0),
+    )
+
+    assert result.slope is not None
+    assert result.coverage == pytest.approx(0.8)
+
+
+def test_analyze_timeline_rejects_inconsistent_anchor_offset() -> None:
+    for anchor in (
+        AudioMatch(100, 102, 0, 100),
+        AudioMatch(100, 1_000_000_100, 999_999_999.5, 100),
+    ):
+        with pytest.raises(ValueError, match="offset must equal"):
+            analyze_timeline((anchor,), 1000)
+
+
+def test_match_audio_streams_applies_timeline_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    anchors = timeline_anchors(intercept=0.007)
+    monkeypatch.setattr(
+        "dubgraft.matching.scan_audio_matches", lambda *args, **kwargs: anchors
+    )
+
+    result = match_audio_streams(
+        Path("source.mkv"),
+        1,
+        Path("target.mkv"),
+        2,
+        1000,
+        timeline_config=TimelineConfig(direct_tolerance_seconds=0.005),
+    )
+
+    assert result.timeline.kind is TimelineKind.STATIC

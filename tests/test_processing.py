@@ -447,6 +447,23 @@ def test_process_media_reconstructs_drift(
     assert analyses == [result.timeline]
 
 
+def test_process_media_requires_output_before_matching(
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, source_info, target_info, source_audio, target_audio = processing_media
+    config = replace(config, output=None, analyze_only=True)
+    monkeypatch.setattr(
+        "dubgraft.processing.match_audio_streams",
+        lambda *args, **kwargs: pytest.fail("matching must not run"),
+    )
+
+    with pytest.raises(ProcessingError, match="Output is required"):
+        process_media(config, source_info, target_info, source_audio, target_audio)
+
+
 @pytest.mark.parametrize("duration", [None, 0, float("nan"), float("inf")])
 def test_process_media_requires_a_finite_target_duration(
     duration: float | None,

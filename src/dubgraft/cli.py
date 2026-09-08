@@ -25,7 +25,14 @@ from dubgraft.media import (
 from dubgraft.processing import (
     InconclusiveTimelineError,
     ProcessingError,
-    process_media,
+    analyze_media,
+    render_media,
+)
+from dubgraft.report import (
+    ReportError,
+    build_report,
+    format_human_report,
+    write_json_report,
 )
 
 
@@ -99,6 +106,30 @@ def format_processing_summary(
     return "\n".join(lines)
 
 
+def format_analysis_summary(result: MatchingResult) -> str:
+    """Format a concise result for analysis-only mode."""
+    timeline = result.timeline
+    analysis = f"Analysis: {timeline.kind.value}"
+    if timeline.used_duration_fallback:
+        analysis += " (strict duration fallback)"
+    lines = [
+        analysis,
+        f"Anchors: {len(result.anchors)}/{result.requested_anchor_count} | "
+        f"coverage: {timeline.coverage:.1%}",
+    ]
+    if timeline.median_offset is not None:
+        lines.append(f"Median offset: {_format_offset(timeline.median_offset)}")
+    if timeline.slope is not None and timeline.intercept is not None:
+        drift = timeline.drift_over_duration or 0.0
+        lines.append(
+            f"Model: slope {timeline.slope:.9f} | "
+            f"intercept {_format_offset(timeline.intercept)} | "
+            f"total drift {_format_offset(drift)}"
+        )
+    lines.append("No output was created (--analyze-only).")
+    return "\n".join(lines)
+
+
 def format_inconclusive_error(error: InconclusiveTimelineError) -> str:
     """Format an inconclusive result with the evidence that was available."""
     result = error.result
@@ -164,6 +195,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="allow replacing an existing output file",
     )
+    parser.add_argument(
+        "--analyze-only",
+        action="store_true",
+        help="analyze synchronization without creating an output",
+    )
+    parser.add_argument(
+        "--report",
+        type=Path,
+        metavar="PATH",
+        help="write JSON to the exact file path (extension optional)",
+    )
+    parser.add_argument(
+        "--print-report",
+        action="store_true",
+        help="print candidates, anchors, and model diagnostics",
+    )
     return parser
 
 
@@ -183,13 +230,15 @@ def _resolve_argument(
     role: str,
     positional: str | None,
     explicit: str | None,
-) -> Path:
+    *,
+    required: bool = True,
+) -> Path | None:
     if positional is not None and explicit is not None:
         parser.error(f"{role} was provided more than once")
     value = explicit if explicit is not None else positional
-    if value is None:
+    if value is None and required:
         parser.error(f"{role} is required")
-    return Path(value)
+    return Path(value) if value is not None else None
 
 
 def parse_processing_config(
@@ -197,19 +246,29 @@ def parse_processing_config(
 ) -> ProcessingConfig:
     parser = parser or build_parser()
     arguments = parser.parse_intermixed_args(argv)
-    return ProcessingConfig(
-        source=_resolve_argument(
+    source = _resolve_argument(
             parser, "SOURCE", arguments.positional_source, arguments.explicit_source
-        ),
-        target=_resolve_argument(
+        )
+    target = _resolve_argument(
             parser, "TARGET", arguments.positional_target, arguments.explicit_target
-        ),
+        )
+    assert source is not None and target is not None
+    return ProcessingConfig(
+        source=source,
+        target=target,
         output=_resolve_argument(
-            parser, "OUTPUT", arguments.positional_output, arguments.explicit_output
+            parser,
+            "OUTPUT",
+            arguments.positional_output,
+            arguments.explicit_output,
+            required=not arguments.analyze_only,
         ),
         overwrite=arguments.overwrite,
         source_audio_index=arguments.source_audio,
         target_audio_index=arguments.target_audio,
+        analyze_only=arguments.analyze_only,
+        report=arguments.report,
+        print_report=arguments.print_report,
     )
 
 
@@ -354,27 +413,55 @@ def format_inspection(info: MediaInfo) -> str:
     return "\n".join(lines)
 
 
-def _select_processing_audio(
+def _probe_processing_media(
     parser: argparse.ArgumentParser,
     role: str,
     path: Path,
-    index: int | None,
-    option: str,
-) -> tuple[MediaInfo, MediaStream]:
+) -> MediaInfo:
     try:
-        info = probe_media(path)
+        return probe_media(path)
     except MediaProbeError as error:
         parser.exit(1, f"{parser.prog}: error: could not inspect {role}: {error}\n")
 
-    try:
-        return info, select_audio_stream(info, index)
-    except AudioSelectionError as error:
-        lines = [f"{parser.prog}: error: could not select {role} audio: {error}"]
-        if error.candidates:
-            lines.append("Available audio streams:")
-            lines.extend(f"  {_format_audio(stream)}" for stream in error.candidates)
-            lines.append(f"Use {option} INDEX to select one.")
-        parser.exit(2, "\n".join(lines) + "\n")
+
+def _format_audio_selection_error(
+    parser: argparse.ArgumentParser,
+    role: str,
+    option: str,
+    error: AudioSelectionError,
+) -> str:
+    lines = [f"{parser.prog}: error: could not select {role} audio: {error}"]
+    if error.candidates:
+        lines.append(f"Available {role} audio streams:")
+        lines.extend(f"  {_format_audio(stream)}" for stream in error.candidates)
+        lines.append(f"Use {option} INDEX to select one.")
+    return "\n".join(lines)
+
+
+def _write_requested_report(
+    config: ProcessingConfig,
+    source_info: MediaInfo,
+    target_info: MediaInfo,
+    source_audio: MediaStream,
+    target_audio: MediaStream,
+    result: MatchingResult,
+    *,
+    status: str,
+    error: str | None = None,
+) -> None:
+    if config.report is None:
+        return
+    report = build_report(
+        config,
+        source_info,
+        target_info,
+        source_audio,
+        target_audio,
+        result,
+        status=status,
+        error=error,
+    )
+    write_json_report(config.report, report, overwrite=config.overwrite)
 
 
 def _run_inspect(argv: Sequence[str]) -> int:
@@ -413,30 +500,194 @@ def main(argv: Sequence[str] | None = None) -> int:
         validate_ffmpeg()
     except FFmpegError as error:
         parser.exit(1, f"{parser.prog}: error: {error}\n")
-    source_info, source_audio = _select_processing_audio(
-        parser,
-        "Source",
-        config.source,
-        config.source_audio_index,
-        "-S INDEX or --source-audio",
-    )
-    target_info, target_audio = _select_processing_audio(
-        parser,
-        "Target",
-        config.target,
-        config.target_audio_index,
-        "-T INDEX or --target-audio",
-    )
+    source_info = _probe_processing_media(parser, "Source", config.source)
+    target_info = _probe_processing_media(parser, "Target", config.target)
+    selections: list[MediaStream | None] = []
+    selection_errors = []
+    for role, info, index, option in (
+        (
+            "Source",
+            source_info,
+            config.source_audio_index,
+            "-S INDEX or --source-audio",
+        ),
+        (
+            "Target",
+            target_info,
+            config.target_audio_index,
+            "-T INDEX or --target-audio",
+        ),
+    ):
+        try:
+            selections.append(select_audio_stream(info, index))
+        except AudioSelectionError as error:
+            selections.append(None)
+            selection_errors.append(
+                _format_audio_selection_error(parser, role, option, error)
+            )
+    if selection_errors:
+        parser.exit(2, "\n\n".join(selection_errors) + "\n")
+    source_audio, target_audio = selections
+    assert source_audio is not None and target_audio is not None
     try:
-        result = process_media(
+        result = analyze_media(
             config, source_info, target_info, source_audio, target_audio
         )
+        if result.timeline.kind is TimelineKind.INCONCLUSIVE:
+            raise InconclusiveTimelineError(result.timeline, result)
     except InconclusiveTimelineError as error:
+        if error.result is not None:
+            try:
+                _write_requested_report(
+                    config,
+                    source_info,
+                    target_info,
+                    source_audio,
+                    target_audio,
+                    error.result,
+                    status="inconclusive",
+                    error=str(error),
+                )
+            except ReportError as report_error:
+                if config.print_report:
+                    print(
+                        format_human_report(
+                            config,
+                            source_info,
+                            target_info,
+                            source_audio,
+                            target_audio,
+                            error.result,
+                            status="inconclusive",
+                            error=str(error),
+                        )
+                    )
+                parser.exit(
+                    1,
+                    f"{parser.prog}: error: {format_inconclusive_error(error)}\n"
+                    f"{parser.prog}: error: {report_error}\n",
+                )
+            if config.print_report:
+                print(
+                    format_human_report(
+                        config,
+                        source_info,
+                        target_info,
+                        source_audio,
+                        target_audio,
+                        error.result,
+                        status="inconclusive",
+                        error=str(error),
+                    )
+                )
         detail = format_inconclusive_error(error)
         parser.exit(1, f"{parser.prog}: error: {detail}\n")
     except (FFmpegError, ProcessingError) as error:
         parser.exit(1, f"{parser.prog}: error: {error}\n")
-    print(format_processing_summary(result, config, target_info, source_audio))
+
+    if not config.analyze_only:
+        try:
+            render_media(config, target_info, source_audio, result)
+        except (FFmpegError, ProcessingError) as error:
+            try:
+                _write_requested_report(
+                    config,
+                    source_info,
+                    target_info,
+                    source_audio,
+                    target_audio,
+                    result,
+                    status="processing_failed",
+                    error=str(error),
+                )
+            except ReportError as report_error:
+                if config.print_report:
+                    print(
+                        format_human_report(
+                            config,
+                            source_info,
+                            target_info,
+                            source_audio,
+                            target_audio,
+                            result,
+                            status="processing_failed",
+                            error=str(error),
+                        )
+                    )
+                parser.exit(
+                    1,
+                    f"{parser.prog}: error: {error}\n"
+                    f"{parser.prog}: error: {report_error}\n",
+                )
+            if config.print_report:
+                print(
+                    format_human_report(
+                        config,
+                        source_info,
+                        target_info,
+                        source_audio,
+                        target_audio,
+                        result,
+                        status="processing_failed",
+                        error=str(error),
+                    )
+                )
+            parser.exit(1, f"{parser.prog}: error: {error}\n")
+
+    status = "analysis_only" if config.analyze_only else "completed"
+    try:
+        _write_requested_report(
+            config,
+            source_info,
+            target_info,
+            source_audio,
+            target_audio,
+            result,
+            status=status,
+        )
+    except ReportError as error:
+        if config.analyze_only:
+            print(format_analysis_summary(result))
+        else:
+            print(format_processing_summary(result, config, target_info, source_audio))
+        if config.print_report:
+            print()
+            print(
+                format_human_report(
+                    config,
+                    source_info,
+                    target_info,
+                    source_audio,
+                    target_audio,
+                    result,
+                    status=status,
+                )
+            )
+        if config.analyze_only:
+            parser.exit(1, f"{parser.prog}: error: {error}\n")
+        parser.exit(
+            1,
+            f"{parser.prog}: error: Output was created at {config.output}, "
+            f"but {error}\n",
+        )
+
+    if config.analyze_only:
+        print(format_analysis_summary(result))
+    else:
+        print(format_processing_summary(result, config, target_info, source_audio))
+    if config.print_report:
+        print()
+        print(
+            format_human_report(
+                config,
+                source_info,
+                target_info,
+                source_audio,
+                target_audio,
+                result,
+                status=status,
+            )
+        )
     return 0
 
 

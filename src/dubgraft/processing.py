@@ -42,6 +42,12 @@ class InconclusiveTimelineError(ProcessingError):
         super().__init__(analysis.reason or "timeline analysis was inconclusive")
 
 
+def _output_path(config: ProcessingConfig) -> Path:
+    if config.output is None:
+        raise ProcessingError("Output is required for media processing")
+    return config.output
+
+
 def _run_ffmpeg(command: list[str], operation: str) -> None:
     try:
         result = subprocess.run(
@@ -60,14 +66,15 @@ def _run_ffmpeg(command: list[str], operation: str) -> None:
 
 
 def _publish_output(temporary_output: Path, config: ProcessingConfig) -> None:
+    output = _output_path(config)
     if config.overwrite:
-        temporary_output.replace(config.output)
+        temporary_output.replace(output)
         return
     try:
-        os.link(temporary_output, config.output)
+        os.link(temporary_output, output)
     except FileExistsError as error:
         raise ProcessingError(
-            f"Output already exists: {config.output}; use --overwrite to replace it"
+            f"Output already exists: {output}; use --overwrite to replace it"
         ) from error
 
 
@@ -136,11 +143,12 @@ def mux_source_audio(
     if ffmpeg is None:
         raise FFmpegError("ffmpeg was not found in PATH")
     target_duration = _target_duration(target_info)
+    output = _output_path(config)
     try:
         with tempfile.TemporaryDirectory(
-            prefix=".dubgraft-", dir=config.output.parent
+            prefix=".dubgraft-", dir=output.parent
         ) as temporary_directory:
-            temporary_output = Path(temporary_directory) / config.output.name
+            temporary_output = Path(temporary_directory) / output.name
             source_path = config.source
             source_stream_index = source_audio.index
             if offset > 0:
@@ -278,9 +286,10 @@ def mux_drift_audio(
     filters.extend(["apad", f"atrim=duration={target_duration:.9f}"])
     filter_graph = f"[0:{source_audio.index}]" + ",".join(filters) + "[dubbed]"
 
+    output = _output_path(config)
     try:
         with tempfile.TemporaryDirectory(
-            prefix=".dubgraft-", dir=config.output.parent
+            prefix=".dubgraft-", dir=output.parent
         ) as temporary_directory:
             reconstructed_audio = Path(temporary_directory) / "reconstructed-audio.mka"
             reconstruction_command = [
@@ -307,7 +316,7 @@ def mux_drift_audio(
                 raise FFmpegError("ffmpeg did not create the reconstructed audio")
             _validate_reconstructed_audio(reconstructed_audio, source_audio)
 
-            temporary_output = Path(temporary_directory) / config.output.name
+            temporary_output = Path(temporary_directory) / output.name
             command = [
                 ffmpeg,
                 "-v",
@@ -345,6 +354,50 @@ def mux_drift_audio(
         raise ProcessingError(f"could not publish Output: {error}") from error
 
 
+def analyze_media(
+    config: ProcessingConfig,
+    source_info: MediaInfo,
+    target_info: MediaInfo,
+    source_audio: MediaStream,
+    target_audio: MediaStream,
+    matching_config: MatchingConfig = MatchingConfig(),
+    timeline_config: TimelineConfig = TimelineConfig(),
+) -> MatchingResult:
+    """Analyze the temporal relationship between selected audio streams."""
+    target_duration = _target_duration(target_info)
+    return match_audio_streams(
+        config.source,
+        source_audio.index,
+        config.target,
+        target_audio.index,
+        target_duration,
+        matching_config,
+        timeline_config,
+        source_duration=_source_audio_duration(source_info, source_audio),
+    )
+
+
+def render_media(
+    config: ProcessingConfig,
+    target_info: MediaInfo,
+    source_audio: MediaStream,
+    result: MatchingResult,
+) -> None:
+    """Render a previously analyzed and conclusive matching result."""
+    if result.timeline.kind is TimelineKind.INCONCLUSIVE:
+        raise InconclusiveTimelineError(result.timeline, result)
+    if result.timeline.kind is TimelineKind.DRIFT:
+        mux_drift_audio(config, target_info, source_audio, result.timeline)
+        return
+
+    offset = 0.0
+    if result.timeline.kind is TimelineKind.STATIC:
+        if result.timeline.median_offset is None:
+            raise ProcessingError("static timeline has no offset")
+        offset = result.timeline.median_offset
+    mux_source_audio(config, target_info, source_audio, offset=offset)
+
+
 def process_media(
     config: ProcessingConfig,
     source_info: MediaInfo,
@@ -355,28 +408,15 @@ def process_media(
     timeline_config: TimelineConfig = TimelineConfig(),
 ) -> MatchingResult:
     """Analyze selected streams and produce a synchronized output."""
-    target_duration = _target_duration(target_info)
-
-    result = match_audio_streams(
-        config.source,
-        source_audio.index,
-        config.target,
-        target_audio.index,
-        target_duration,
+    _output_path(config)
+    result = analyze_media(
+        config,
+        source_info,
+        target_info,
+        source_audio,
+        target_audio,
         matching_config,
         timeline_config,
-        source_duration=_source_audio_duration(source_info, source_audio),
     )
-    if result.timeline.kind is TimelineKind.INCONCLUSIVE:
-        raise InconclusiveTimelineError(result.timeline, result)
-    if result.timeline.kind is TimelineKind.DRIFT:
-        mux_drift_audio(config, target_info, source_audio, result.timeline)
-        return result
-
-    offset = 0.0
-    if result.timeline.kind is TimelineKind.STATIC:
-        if result.timeline.median_offset is None:
-            raise ProcessingError("static timeline has no offset")
-        offset = result.timeline.median_offset
-    mux_source_audio(config, target_info, source_audio, offset=offset)
+    render_media(config, target_info, source_audio, result)
     return result

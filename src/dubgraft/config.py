@@ -12,10 +12,13 @@ ANALYSIS_SAMPLE_RATE = 22_050
 class ProcessingConfig:
     source: Path
     target: Path
-    output: Path
+    output: Path | None = None
     overwrite: bool = False
     source_audio_index: int | None = None
     target_audio_index: int | None = None
+    analyze_only: bool = False
+    report: Path | None = None
+    print_report: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +107,8 @@ def validate_timeline_config(config: TimelineConfig) -> TimelineConfig:
 def validate_processing_config(config: ProcessingConfig) -> ProcessingConfig:
     source = config.source.expanduser().resolve()
     target = config.target.expanduser().resolve()
-    output = config.output.expanduser().resolve()
+    output = config.output.expanduser().resolve() if config.output is not None else None
+    report = config.report.expanduser().resolve() if config.report is not None else None
 
     for role, path in (("Source", source), ("Target", target)):
         if not path.exists():
@@ -112,18 +116,35 @@ def validate_processing_config(config: ProcessingConfig) -> ProcessingConfig:
         if not path.is_file():
             raise ConfigurationError(f"{role} is not a file: {path}")
 
-    if output == source:
-        raise ConfigurationError("Output must not be the Source file")
-    if output == target:
-        raise ConfigurationError("Output must not be the Target file")
-    if output.is_dir():
-        raise ConfigurationError(f"Output is a directory: {output}")
-    if output.exists() and not config.overwrite:
-        raise ConfigurationError(
-            f"Output already exists: {output}; use --overwrite to replace it"
-        )
-    if not output.parent.is_dir():
-        raise ConfigurationError(f"Output directory does not exist: {output.parent}")
+    if output is None and not config.analyze_only:
+        raise ConfigurationError("Output is required unless --analyze-only is used")
+    if output is not None and not config.analyze_only:
+        if output == source:
+            raise ConfigurationError("Output must not be the Source file")
+        if output == target:
+            raise ConfigurationError("Output must not be the Target file")
+        if output.is_dir():
+            raise ConfigurationError(f"Output is a directory: {output}")
+        if output.exists() and not config.overwrite:
+            raise ConfigurationError(
+                f"Output already exists: {output}; use --overwrite to replace it"
+            )
+        if not output.parent.is_dir():
+            raise ConfigurationError(f"Output directory does not exist: {output.parent}")
+
+    if report is not None:
+        if report in {source, target}:
+            raise ConfigurationError("Report must not replace a Source or Target file")
+        if output is not None and report == output:
+            raise ConfigurationError("Report must not be the Output file")
+        if report.is_dir():
+            raise ConfigurationError(f"Report is a directory: {report}")
+        if report.exists() and not config.overwrite:
+            raise ConfigurationError(
+                f"Report already exists: {report}; use --overwrite to replace it"
+            )
+        if not report.parent.is_dir():
+            raise ConfigurationError(f"Report directory does not exist: {report.parent}")
 
     return ProcessingConfig(
         source=source,
@@ -132,4 +153,7 @@ def validate_processing_config(config: ProcessingConfig) -> ProcessingConfig:
         overwrite=config.overwrite,
         source_audio_index=config.source_audio_index,
         target_audio_index=config.target_audio_index,
+        analyze_only=config.analyze_only,
+        report=report,
+        print_report=config.print_report,
     )

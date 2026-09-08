@@ -1,4 +1,5 @@
 import math
+from pathlib import Path
 
 import pytest
 
@@ -6,8 +7,10 @@ from dubgraft.config import (
     ANALYSIS_SAMPLE_RATE,
     ConfigurationError,
     MatchingConfig,
+    ProcessingConfig,
     TimelineConfig,
     validate_matching_config,
+    validate_processing_config,
     validate_timeline_config,
 )
 
@@ -82,3 +85,28 @@ def test_timeline_config_uses_validated_defaults() -> None:
 def test_timeline_config_rejects_invalid_values(config: TimelineConfig) -> None:
     with pytest.raises(ConfigurationError):
         validate_timeline_config(config)
+
+
+def test_processing_config_allows_missing_output_only_for_analysis(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+
+    validated = validate_processing_config(
+        ProcessingConfig(source, target, analyze_only=True)
+    )
+
+    assert validated.output is None
+
+
+def test_processing_config_requires_output_for_rendering(tmp_path: Path) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+
+    with pytest.raises(ConfigurationError, match="Output is required"):
+        validate_processing_config(ProcessingConfig(source, target))

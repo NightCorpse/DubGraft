@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -7,14 +8,19 @@ from dubgraft.cli import format_processing_summary, main, parse_processing_confi
 from dubgraft.config import ProcessingConfig
 from dubgraft.matching import AudioMatch, MatchingResult, TimelineAnalysis, TimelineKind
 from dubgraft.media import FFmpegError, MediaInfo, MediaProbeError, MediaStream
-from dubgraft.processing import InconclusiveTimelineError
+from dubgraft.processing import ProcessingError
+from dubgraft.report import ReportError
 
 
 @pytest.fixture
 def available_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("dubgraft.cli.validate_ffmpeg", lambda: None)
     monkeypatch.setattr(
-        "dubgraft.cli.process_media",
+        "dubgraft.cli.render_media",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "dubgraft.cli.analyze_media",
         lambda *args, **kwargs: processing_result(TimelineKind.DIRECT),
     )
 
@@ -103,6 +109,17 @@ def test_cli_accepts_long_audio_stream_options() -> None:
         ]
     )
 
+    assert config.source_audio_index == 1
+    assert config.target_audio_index == 4
+
+
+def test_cli_accepts_analyze_only_without_output() -> None:
+    config = parse_processing_config(
+        ["source.mkv", "target.mkv", "--analyze-only", "-S", "1", "-T", "4"]
+    )
+
+    assert config.output is None
+    assert config.analyze_only is True
     assert config.source_audio_index == 1
     assert config.target_audio_index == 4
 
@@ -277,10 +294,9 @@ def test_cli_reports_inconclusive_timeline(
     )
     result = MatchingResult((), (), 4, 20, analysis)
 
-    def fail_processing(*args: object, **kwargs: object) -> None:
-        raise InconclusiveTimelineError(analysis, result)
-
-    monkeypatch.setattr("dubgraft.cli.process_media", fail_processing)
+    monkeypatch.setattr(
+        "dubgraft.cli.analyze_media", lambda *args, **kwargs: result
+    )
 
     with pytest.raises(SystemExit) as exit_info:
         main([str(source), str(target), str(tmp_path / "output.mkv")])
@@ -290,6 +306,241 @@ def test_cli_reports_inconclusive_timeline(
     assert "inconclusive analysis: no anchors were found" in error
     assert "Anchors: 0/4 | coverage: 0.0%" in error
     assert "No output was created." in error
+
+
+def test_analyze_only_does_not_process_media(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    available_ffmpeg: None,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+    monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
+    monkeypatch.setattr(
+        "dubgraft.cli.analyze_media",
+        lambda *args, **kwargs: processing_result(TimelineKind.DIRECT),
+    )
+    monkeypatch.setattr(
+        "dubgraft.cli.render_media",
+        lambda *args, **kwargs: pytest.fail("processing must not run"),
+    )
+
+    assert main([str(source), str(target), "--analyze-only"]) == 0
+
+    output = capsys.readouterr().out
+    assert "Analysis: direct" in output
+    assert "No output was created (--analyze-only)." in output
+
+
+def test_cli_writes_detailed_json_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    available_ffmpeg: None,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    report = tmp_path / "analysis-without-extension"
+    source.touch()
+    target.touch()
+    monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
+
+    assert (
+        main(
+            [
+                str(source),
+                str(target),
+                "--analyze-only",
+                "--report",
+                str(report),
+            ]
+        )
+        == 0
+    )
+
+    data = json.loads(report.read_text(encoding="utf-8"))
+    assert data["schema_version"] == 1
+    assert data["status"] == "analysis_only"
+    assert data["mode"] == "analyze_only"
+    assert data["media"]["output"] is None
+    assert data["matching"]["anchor_count"] == 4
+    assert len(data["matching"]["anchors"]) == 4
+    assert data["timeline"]["classification"] == "direct"
+    assert data["formulas"]["timeline"].startswith("source_time =")
+    assert data["processing"]["rendered"] is False
+
+
+def test_cli_prints_full_report_after_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    available_ffmpeg: None,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+    monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
+
+    assert (
+        main([str(source), str(target), str(tmp_path / "output.mkv"), "--print-report"])
+        == 0
+    )
+
+    output = capsys.readouterr().out
+    assert output.index("Analysis: direct") < output.index("DubGraft Analysis Report")
+    assert "Formulas" in output
+    assert "Timeline: source_time = slope * target_time + intercept" in output
+    assert "Candidates (4)" in output
+    assert "Selected anchors (4)" in output
+    assert "Target (s)" in output
+
+
+def test_cli_writes_completed_processing_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    available_ffmpeg: None,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    output = tmp_path / "output.mkv"
+    report = tmp_path / "report.json"
+    source.touch()
+    target.touch()
+    monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
+
+    assert main([str(source), str(target), str(output), "--report", str(report)]) == 0
+
+    data = json.loads(report.read_text(encoding="utf-8"))
+    assert data["status"] == "completed"
+    assert data["mode"] == "process"
+    assert data["media"]["output"] == str(output.resolve())
+    assert data["processing"]["rendered"] is True
+
+
+def test_cli_preserves_analysis_report_when_rendering_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    available_ffmpeg: None,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    report = tmp_path / "failed.json"
+    source.touch()
+    target.touch()
+    monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
+
+    def fail_render(*args: object, **kwargs: object) -> None:
+        raise ProcessingError("Atmos cannot be preserved")
+
+    monkeypatch.setattr("dubgraft.cli.render_media", fail_render)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                str(source),
+                str(target),
+                str(tmp_path / "output.mkv"),
+                "--report",
+                str(report),
+                "--print-report",
+            ]
+        )
+
+    assert exit_info.value.code == 1
+    data = json.loads(report.read_text(encoding="utf-8"))
+    assert data["status"] == "processing_failed"
+    assert data["error"] == "Atmos cannot be preserved"
+    captured = capsys.readouterr()
+    assert "Status: processing_failed" in captured.out
+    assert "Atmos cannot be preserved" in captured.err
+
+
+def test_cli_reports_partial_success_when_json_write_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    available_ffmpeg: None,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    output = tmp_path / "output.mkv"
+    source.touch()
+    target.touch()
+    monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
+
+    def fail_report(*args: object, **kwargs: object) -> None:
+        raise ReportError("could not write report")
+
+    monkeypatch.setattr("dubgraft.cli.write_json_report", fail_report)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                str(source),
+                str(target),
+                str(output),
+                "--report",
+                str(tmp_path / "report.json"),
+                "--print-report",
+            ]
+        )
+
+    assert exit_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "DubGraft Analysis Report" in captured.out
+    assert f"Output was created at {output.resolve()}" in captured.err
+
+
+def test_analyze_only_writes_and_prints_inconclusive_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    available_ffmpeg: None,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    report = tmp_path / "inconclusive.json"
+    source.touch()
+    target.touch()
+    monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
+    analysis = TimelineAnalysis(
+        TimelineKind.INCONCLUSIVE,
+        None,
+        None,
+        None,
+        None,
+        None,
+        0,
+        0,
+        None,
+        "no anchors were found",
+    )
+    monkeypatch.setattr(
+        "dubgraft.cli.analyze_media",
+        lambda *args, **kwargs: MatchingResult((), (), 4, 20, analysis),
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                str(source),
+                str(target),
+                "--analyze-only",
+                "--report",
+                str(report),
+                "--print-report",
+            ]
+        )
+
+    assert exit_info.value.code == 1
+    assert json.loads(report.read_text(encoding="utf-8"))["status"] == "inconclusive"
+    captured = capsys.readouterr()
+    assert "Status: inconclusive" in captured.out
+    assert "No output was created." in captured.err
 
 
 @pytest.mark.parametrize(
@@ -390,9 +641,50 @@ def test_cli_lists_audio_candidates_when_selection_is_ambiguous(
     assert exit_info.value.code == 2
     error = capsys.readouterr().err
     assert "could not select Source audio" in error
+    assert "Available Source audio streams:" in error
     assert "[1] aac | por" in error
     assert "[2] eac3 | eng" in error
     assert "Use -S INDEX or --source-audio INDEX" in error
+    assert "could not select Target audio" in error
+    assert "Available Target audio streams:" in error
+    assert "Use -T INDEX or --target-audio INDEX" in error
+
+
+def test_cli_suggests_target_option_when_only_target_is_ambiguous(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    available_ffmpeg: None,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+
+    def probe(path: Path) -> MediaInfo:
+        stream_count = 1 if path == source.resolve() else 2
+        return MediaInfo(
+            path=path,
+            container="matroska,webm",
+            duration=None,
+            size=None,
+            bit_rate=None,
+            streams=tuple(
+                MediaStream(index=index, kind="audio", codec="eac3")
+                for index in range(1, stream_count + 1)
+            ),
+        )
+
+    monkeypatch.setattr("dubgraft.cli.probe_media", probe)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main([str(source), str(target), str(tmp_path / "output.mkv")])
+
+    assert exit_info.value.code == 2
+    error = capsys.readouterr().err
+    assert "could not select Source audio" not in error
+    assert "could not select Target audio" in error
+    assert "Use -T INDEX or --target-audio INDEX" in error
 
 
 def test_cli_reports_unavailable_ffmpeg(

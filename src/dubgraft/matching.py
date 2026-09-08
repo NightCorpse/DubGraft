@@ -47,6 +47,7 @@ class TimelineAnalysis:
     drift_over_duration: float | None
     reason: str | None = None
     used_duration_fallback: bool = False
+    source_duration_error: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -320,6 +321,7 @@ def analyze_timeline(
         drift_over_duration,
         reason,
         used_duration_fallback,
+        duration_error,
     )
 
 

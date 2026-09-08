@@ -14,7 +14,15 @@ from dubgraft.matching import (
     TimelineKind,
     match_audio_streams,
 )
-from dubgraft.media import FFmpegError, MediaInfo, MediaStream
+from dubgraft.media import (
+    AudioSelectionError,
+    FFmpegError,
+    MediaInfo,
+    MediaProbeError,
+    MediaStream,
+    probe_media,
+    select_audio_stream,
+)
 
 
 class ProcessingError(RuntimeError):
@@ -24,7 +32,12 @@ class ProcessingError(RuntimeError):
 class InconclusiveTimelineError(ProcessingError):
     """Raised when matching cannot determine a safe temporal relationship."""
 
-    def __init__(self, analysis: TimelineAnalysis) -> None:
+    def __init__(
+        self,
+        analysis: TimelineAnalysis,
+        result: MatchingResult | None = None,
+    ) -> None:
+        self.result = result
         self.analysis = analysis
         super().__init__(analysis.reason or "timeline analysis was inconclusive")
 
@@ -88,6 +101,27 @@ def _audio_metadata_arguments(
             [f"-metadata:s:a:{audio_index}", f"title={source_audio.title}"]
         )
     return arguments
+
+
+def _validate_reconstructed_audio(path: Path, source_audio: MediaStream) -> None:
+    try:
+        reconstructed = select_audio_stream(probe_media(path))
+    except (MediaProbeError, AudioSelectionError) as error:
+        raise ProcessingError(
+            f"could not validate reconstructed audio: {error}"
+        ) from error
+
+    for name, source_value, output_value in (
+        ("channel count", source_audio.channels, reconstructed.channels),
+        ("channel layout", source_audio.channel_layout, reconstructed.channel_layout),
+        ("sample rate", source_audio.sample_rate, reconstructed.sample_rate),
+    ):
+        if source_value is not None and source_value != output_value:
+            raise ProcessingError(
+                f"reconstructed E-AC-3 changed {name} from {source_value} to "
+                f"{output_value}; no output was created to avoid an implicit "
+                "audio conversion"
+            )
 
 
 def mux_source_audio(
@@ -191,9 +225,40 @@ def mux_drift_audio(
         or slope <= 0
     ):
         raise ProcessingError("drift timeline has an invalid linear model")
-    if source_audio.channels is not None and source_audio.channels > 6:
+    atmos_description = " ".join(
+        value for value in (source_audio.profile, source_audio.title) if value
+    )
+    if source_audio.codec.casefold() == "truehd":
         raise ProcessingError(
-            "E-AC-3 drift output supports at most 6 audio channels"
+            "selected Source audio uses TrueHD; the E-AC-3 drift path cannot "
+            "preserve its lossless encoding or reliably preserve possible Atmos "
+            "metadata; no output was created"
+        )
+    if "atmos" in atmos_description.casefold():
+        raise ProcessingError(
+            "selected Source audio contains Dolby Atmos metadata; drift requires "
+            "re-encoding and would discard Atmos; no output was created"
+        )
+    if source_audio.channels is None:
+        raise ProcessingError(
+            "could not determine the selected Source audio channel count; no output "
+            "was created to avoid an implicit downmix"
+        )
+    if source_audio.channel_layout is None:
+        raise ProcessingError(
+            "could not determine the selected Source audio channel layout; no output "
+            "was created to avoid an implicit audio conversion"
+        )
+    if source_audio.sample_rate is None:
+        raise ProcessingError(
+            "could not determine the selected Source audio sample rate; no output "
+            "was created to avoid an implicit audio conversion"
+        )
+    if source_audio.channels > 6:
+        raise ProcessingError(
+            f"selected Source audio has {source_audio.channels} channels; "
+            "E-AC-3 drift output supports at most 6; no output was created "
+            "to avoid downmix"
         )
 
     ffmpeg = shutil.which("ffmpeg")
@@ -240,6 +305,7 @@ def mux_drift_audio(
             _run_ffmpeg(reconstruction_command, "drift reconstruction")
             if not reconstructed_audio.is_file():
                 raise FFmpegError("ffmpeg did not create the reconstructed audio")
+            _validate_reconstructed_audio(reconstructed_audio, source_audio)
 
             temporary_output = Path(temporary_directory) / config.output.name
             command = [
@@ -302,7 +368,7 @@ def process_media(
         source_duration=_source_audio_duration(source_info, source_audio),
     )
     if result.timeline.kind is TimelineKind.INCONCLUSIVE:
-        raise InconclusiveTimelineError(result.timeline)
+        raise InconclusiveTimelineError(result.timeline, result)
     if result.timeline.kind is TimelineKind.DRIFT:
         mux_drift_audio(config, target_info, source_audio, result.timeline)
         return result

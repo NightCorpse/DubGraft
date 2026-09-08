@@ -10,6 +10,7 @@ from dubgraft.media import FFmpegError, MediaInfo, MediaStream
 from dubgraft.processing import (
     InconclusiveTimelineError,
     ProcessingError,
+    _validate_reconstructed_audio,
     mux_drift_audio,
     mux_source_audio,
     process_media,
@@ -65,7 +66,9 @@ def processing_media(
         kind="audio",
         codec="eac3",
         duration=999.9,
+        sample_rate=48_000,
         channels=6,
+        channel_layout="5.1(side)",
         language="por",
         title="Brazilian Portuguese",
     )
@@ -109,7 +112,6 @@ def test_mux_source_audio_preserves_target_and_applies_static_offset(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr("dubgraft.processing.subprocess.run", fake_run)
-
     mux_source_audio(config, target_info, source_audio, offset=offset)
 
     command = commands[-1]
@@ -193,6 +195,9 @@ def test_mux_drift_audio_retimes_only_the_new_audio_stream(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr("dubgraft.processing.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "dubgraft.processing._validate_reconstructed_audio", lambda *args: None
+    )
 
     mux_drift_audio(
         config,
@@ -226,13 +231,131 @@ def test_mux_drift_audio_rejects_unsupported_channel_count(
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
 
-    with pytest.raises(ProcessingError, match="at most 6 audio channels"):
+    with pytest.raises(ProcessingError, match="at most 6.*avoid downmix"):
         mux_drift_audio(
             config,
             target_info,
             replace(source_audio, channels=8),
             timeline(TimelineKind.DRIFT, slope=0.999),
         )
+
+
+def test_mux_drift_audio_rejects_atmos_metadata_loss(
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+
+    with pytest.raises(ProcessingError, match="would discard Atmos"):
+        mux_drift_audio(
+            config,
+            target_info,
+            replace(source_audio, profile="Dolby Digital Plus + Dolby Atmos"),
+            timeline(TimelineKind.DRIFT, slope=0.999),
+        )
+
+
+def test_mux_drift_audio_rejects_truehd_quality_loss(
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+
+    with pytest.raises(ProcessingError, match="cannot preserve its lossless encoding"):
+        mux_drift_audio(
+            config,
+            target_info,
+            replace(source_audio, codec="truehd", profile=None, title="English"),
+            timeline(TimelineKind.DRIFT, slope=0.999),
+        )
+
+
+def test_mux_drift_audio_rejects_atmos_title_metadata_loss(
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+
+    with pytest.raises(ProcessingError, match="would discard Atmos"):
+        mux_drift_audio(
+            config,
+            target_info,
+            replace(source_audio, profile=None, title="English Dolby Atmos"),
+            timeline(TimelineKind.DRIFT, slope=0.999),
+        )
+
+
+def test_mux_drift_audio_rejects_unknown_channel_count(
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+
+    with pytest.raises(ProcessingError, match="avoid an implicit downmix"):
+        mux_drift_audio(
+            config,
+            target_info,
+            replace(source_audio, channels=None),
+            timeline(TimelineKind.DRIFT, slope=0.999),
+        )
+
+
+@pytest.mark.parametrize(
+    ("changes", "detail"),
+    [
+        ({"channel_layout": None}, "channel layout"),
+        ({"sample_rate": None}, "sample rate"),
+    ],
+)
+def test_mux_drift_audio_rejects_unknown_audio_format(
+    changes: dict[str, object],
+    detail: str,
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+
+    with pytest.raises(ProcessingError, match=detail):
+        mux_drift_audio(
+            config,
+            target_info,
+            replace(source_audio, **changes),
+            timeline(TimelineKind.DRIFT, slope=0.999),
+        )
+
+
+def test_reconstructed_audio_rejects_implicit_layout_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_audio = MediaStream(
+        index=1,
+        kind="audio",
+        codec="aac",
+        sample_rate=48_000,
+        channels=6,
+        channel_layout="6.0",
+    )
+    reconstructed_audio = MediaStream(
+        index=0,
+        kind="audio",
+        codec="eac3",
+        sample_rate=48_000,
+        channels=5,
+        channel_layout="5.0(side)",
+    )
+    monkeypatch.setattr(
+        "dubgraft.processing.probe_media",
+        lambda path: MediaInfo(path, "matroska,webm", 1, None, None, (reconstructed_audio,)),
+    )
+
+    with pytest.raises(ProcessingError, match="changed channel count.*conversion"):
+        _validate_reconstructed_audio(tmp_path / "audio.mka", source_audio)
 
 
 @pytest.mark.parametrize(

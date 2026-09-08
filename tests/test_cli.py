@@ -3,9 +3,9 @@ from pathlib import Path
 import pytest
 
 from dubgraft import __version__
-from dubgraft.cli import main, parse_processing_config
+from dubgraft.cli import format_processing_summary, main, parse_processing_config
 from dubgraft.config import ProcessingConfig
-from dubgraft.matching import TimelineAnalysis, TimelineKind
+from dubgraft.matching import AudioMatch, MatchingResult, TimelineAnalysis, TimelineKind
 from dubgraft.media import FFmpegError, MediaInfo, MediaProbeError, MediaStream
 from dubgraft.processing import InconclusiveTimelineError
 
@@ -13,7 +13,35 @@ from dubgraft.processing import InconclusiveTimelineError
 @pytest.fixture
 def available_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("dubgraft.cli.validate_ffmpeg", lambda: None)
-    monkeypatch.setattr("dubgraft.cli.process_media", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "dubgraft.cli.process_media",
+        lambda *args, **kwargs: processing_result(TimelineKind.DIRECT),
+    )
+
+
+def processing_result(
+    kind: TimelineKind,
+    *,
+    offset: float = 0.007,
+    slope: float = 1.0,
+    fallback: bool = False,
+) -> MatchingResult:
+    anchors = tuple(AudioMatch(time, time, 0, 100) for time in (100, 400, 700, 900))
+    timeline = TimelineAnalysis(
+        kind,
+        offset,
+        slope,
+        offset,
+        0.001,
+        0.002,
+        0.8,
+        1.0 if kind is not TimelineKind.DRIFT else 0.0,
+        (slope - 1) * 1000,
+        None,
+        fallback,
+        0.004 if fallback else None,
+    )
+    return MatchingResult(anchors, anchors, 4, 20, timeline)
 
 
 def single_audio_info(path: Path) -> MediaInfo:
@@ -247,9 +275,10 @@ def test_cli_reports_inconclusive_timeline(
         None,
         "no anchors were found",
     )
+    result = MatchingResult((), (), 4, 20, analysis)
 
     def fail_processing(*args: object, **kwargs: object) -> None:
-        raise InconclusiveTimelineError(analysis)
+        raise InconclusiveTimelineError(analysis, result)
 
     monkeypatch.setattr("dubgraft.cli.process_media", fail_processing)
 
@@ -257,9 +286,76 @@ def test_cli_reports_inconclusive_timeline(
         main([str(source), str(target), str(tmp_path / "output.mkv")])
 
     assert exit_info.value.code == 1
-    assert (
-        "inconclusive analysis: no anchors were found" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "inconclusive analysis: no anchors were found" in error
+    assert "Anchors: 0/4 | coverage: 0.0%" in error
+    assert "No output was created." in error
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        (
+            processing_result(TimelineKind.DIRECT),
+            ("Analysis: direct", "Offset: +0.007s", "copied without re-encoding"),
+        ),
+        (
+            processing_result(TimelineKind.STATIC, offset=1.25),
+            (
+                "Analysis: static",
+                "trimmed Source beginning by 1.250s",
+                "copied without re-encoding",
+            ),
+        ),
+        (
+            processing_result(
+                TimelineKind.DRIFT,
+                offset=-0.5,
+                slope=0.999,
+                fallback=True,
+            ),
+            (
+                "Analysis: drift (strict duration fallback)",
+                "total drift -1.000s",
+                "Fallback duration error: 0.004s",
+                "E-AC-3 640 kb/s, 5.1(side), re-encoded once",
+            ),
+        ),
+    ],
+)
+def test_processing_summary_reports_decisions(
+    result: MatchingResult,
+    expected: tuple[str, ...],
+    tmp_path: Path,
+) -> None:
+    source_audio = MediaStream(
+        index=1,
+        kind="audio",
+        codec="eac3",
+        channels=6,
+        channel_layout="5.1(side)",
     )
+    target_info = MediaInfo(
+        tmp_path / "target.mkv",
+        "matroska,webm",
+        1000,
+        None,
+        None,
+        (MediaStream(index=0, kind="video", codec="hevc"),),
+    )
+    config = ProcessingConfig(
+        tmp_path / "source.mkv",
+        target_info.path,
+        tmp_path / "output.mkv",
+    )
+
+    summary = format_processing_summary(result, config, target_info, source_audio)
+
+    assert "Anchors: 4/4 | coverage: 80.0%" in summary
+    assert "Target streams: 1 preserved" in summary
+    assert f"Created: {config.output}" in summary
+    for line in expected:
+        assert line in summary
 
 
 def test_cli_lists_audio_candidates_when_selection_is_ambiguous(

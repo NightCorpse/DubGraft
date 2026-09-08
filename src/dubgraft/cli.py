@@ -11,6 +11,7 @@ from dubgraft.config import (
     ProcessingConfig,
     validate_processing_config,
 )
+from dubgraft.matching import MatchingResult, TimelineKind
 from dubgraft.media import (
     AudioSelectionError,
     FFmpegError,
@@ -26,6 +27,93 @@ from dubgraft.processing import (
     ProcessingError,
     process_media,
 )
+
+
+def _format_offset(value: float) -> str:
+    return f"{value:+.3f}s"
+
+
+def format_processing_summary(
+    result: MatchingResult,
+    config: ProcessingConfig,
+    target_info: MediaInfo,
+    source_audio: MediaStream,
+) -> str:
+    """Format the processing decisions and completed output for the user."""
+    timeline = result.timeline
+    analysis = f"Analysis: {timeline.kind.value}"
+    if timeline.used_duration_fallback:
+        analysis += " (strict duration fallback)"
+    lines = [
+        analysis,
+        f"Anchors: {len(result.anchors)}/{result.requested_anchor_count} | "
+        f"coverage: {timeline.coverage:.1%}",
+    ]
+    if timeline.used_duration_fallback:
+        duration_error = timeline.source_duration_error or 0.0
+        lines.append(f"Fallback duration error: {duration_error:.3f}s")
+
+    if timeline.kind is TimelineKind.DIRECT:
+        offset = timeline.median_offset or 0.0
+        lines.extend(
+            [
+                f"Offset: {_format_offset(offset)}",
+                "Audio: copied without re-encoding",
+            ]
+        )
+    elif timeline.kind is TimelineKind.STATIC:
+        offset = timeline.median_offset or 0.0
+        correction = (
+            f"trimmed Source beginning by {offset:.3f}s"
+            if offset > 0
+            else f"delayed Source by {-offset:.3f}s"
+        )
+        lines.extend(
+            [
+                f"Offset: {_format_offset(offset)} | {correction}",
+                "Audio: copied without re-encoding",
+            ]
+        )
+    elif timeline.kind is TimelineKind.DRIFT:
+        slope = timeline.slope or 1.0
+        intercept = timeline.intercept or 0.0
+        drift = timeline.drift_over_duration or 0.0
+        lines.append(
+            f"Model: slope {slope:.9f} | intercept {_format_offset(intercept)} | "
+            f"total drift {_format_offset(drift)}"
+        )
+        layout = source_audio.channel_layout
+        if not layout and source_audio.channels is not None:
+            layout = f"{source_audio.channels} channels"
+        audio = "Audio: E-AC-3 640 kb/s"
+        if layout:
+            audio += f", {layout}"
+        lines.append(audio + ", re-encoded once")
+
+    lines.extend(
+        [
+            f"Target streams: {len(target_info.streams)} preserved",
+            f"Created: {config.output}",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_inconclusive_error(error: InconclusiveTimelineError) -> str:
+    """Format an inconclusive result with the evidence that was available."""
+    result = error.result
+    timeline = error.analysis
+    if result is None:
+        return f"inconclusive analysis: {error}\nNo output was created."
+    lines = [
+        f"inconclusive analysis: {error}",
+        f"Anchors: {len(result.anchors)}/{result.requested_anchor_count} | "
+        f"coverage: {timeline.coverage:.1%}",
+    ]
+    if timeline.source_duration_error is not None:
+        lines.append(f"Source duration error: {timeline.source_duration_error:.3f}s")
+    lines.append("No output was created.")
+    return "\n".join(lines)
 
 
 def _stream_index(value: str) -> int:
@@ -340,12 +428,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         "-T INDEX or --target-audio",
     )
     try:
-        process_media(config, source_info, target_info, source_audio, target_audio)
+        result = process_media(
+            config, source_info, target_info, source_audio, target_audio
+        )
     except InconclusiveTimelineError as error:
-        parser.exit(1, f"{parser.prog}: error: inconclusive analysis: {error}\n")
+        detail = format_inconclusive_error(error)
+        parser.exit(1, f"{parser.prog}: error: {detail}\n")
     except (FFmpegError, ProcessingError) as error:
         parser.exit(1, f"{parser.prog}: error: {error}\n")
-    print(f"Created: {config.output}")
+    print(format_processing_summary(result, config, target_info, source_audio))
     return 0
 
 

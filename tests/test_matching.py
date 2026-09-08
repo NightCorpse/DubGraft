@@ -235,6 +235,7 @@ def test_analyze_timeline_uses_strict_duration_fallback() -> None:
     assert result.kind is TimelineKind.DRIFT
     assert result.coverage == pytest.approx(0.544727, abs=1e-6)
     assert result.used_duration_fallback is True
+    assert result.source_duration_error == pytest.approx(0)
 
 
 @pytest.mark.parametrize("duration_delta", [-0.101, 0.101])
@@ -255,6 +256,7 @@ def test_analyze_timeline_rejects_fallback_with_incompatible_duration(
 
     assert result.kind is TimelineKind.INCONCLUSIVE
     assert result.used_duration_fallback is False
+    assert result.source_duration_error == pytest.approx(abs(duration_delta))
 
 
 def test_analyze_timeline_ignores_a_minority_offset_outlier() -> None:

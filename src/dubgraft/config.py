@@ -8,6 +8,33 @@ from dubgraft.languages import LanguageCodeError, normalize_language_code
 
 
 ANALYSIS_SAMPLE_RATE = 22_050
+MIN_RECOMMENDED_CONFIDENCE = 20.0
+MAX_RECOMMENDED_DIRECT_LIMIT_SECONDS = 0.05
+
+
+@dataclass(frozen=True, slots=True)
+class MatchingConfig:
+    fingerprint_size_seconds: float = 6.0
+    scan_step_seconds: float = 20.0
+    search_radius_seconds: float = 75.0
+    confidence_threshold: float = 60.0
+    anchor_count: int | None = None
+    minimum_anchor_distance_seconds: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TimelineConfig:
+    minimum_anchor_count: int = 4
+    minimum_coverage: float = 0.6
+    fallback_minimum_coverage: float = 0.5
+    stability_tolerance_seconds: float = 0.05
+    minimum_stable_ratio: float = 0.8
+    direct_tolerance_seconds: float = 0.02
+    drift_tolerance_seconds: float = 0.05
+    maximum_rms_residual_seconds: float = 0.05
+    fallback_maximum_rms_residual_seconds: float = 0.01
+    fallback_maximum_residual_seconds: float = 0.02
+    fallback_duration_tolerance_seconds: float = 0.1
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,29 +53,9 @@ class ProcessingConfig:
     log: Path | None = None
     track_name: str | None = None
     language: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class MatchingConfig:
-    fingerprint_size_seconds: float = 6.0
-    scan_step_seconds: float = 20.0
-    search_radius_seconds: float = 75.0
-    confidence_threshold: float = 60.0
-
-
-@dataclass(frozen=True, slots=True)
-class TimelineConfig:
-    minimum_anchor_count: int = 4
-    minimum_coverage: float = 0.6
-    fallback_minimum_coverage: float = 0.5
-    stability_tolerance_seconds: float = 0.05
-    minimum_stable_ratio: float = 0.8
-    direct_tolerance_seconds: float = 0.02
-    drift_tolerance_seconds: float = 0.05
-    maximum_rms_residual_seconds: float = 0.05
-    fallback_maximum_rms_residual_seconds: float = 0.01
-    fallback_maximum_residual_seconds: float = 0.02
-    fallback_duration_tolerance_seconds: float = 0.1
+    matching_config: MatchingConfig = MatchingConfig()
+    timeline_config: TimelineConfig = TimelineConfig()
+    force: bool = False
 
 
 class ConfigurationError(ValueError):
@@ -103,6 +110,19 @@ def validate_matching_config(config: MatchingConfig) -> MatchingConfig:
         raise ConfigurationError(
             "confidence threshold must be a non-negative finite number"
         )
+    if config.anchor_count is not None and (
+        isinstance(config.anchor_count, bool)
+        or not isinstance(config.anchor_count, int)
+        or config.anchor_count < 4
+    ):
+        raise ConfigurationError("anchor count must be at least 4")
+    if config.minimum_anchor_distance_seconds is not None and (
+        not math.isfinite(config.minimum_anchor_distance_seconds)
+        or config.minimum_anchor_distance_seconds < 0
+    ):
+        raise ConfigurationError(
+            "minimum anchor distance must be finite and non-negative"
+        )
     return config
 
 
@@ -143,6 +163,25 @@ def validate_timeline_config(config: TimelineConfig) -> TimelineConfig:
 
 
 def validate_processing_config(config: ProcessingConfig) -> ProcessingConfig:
+    validate_matching_config(config.matching_config)
+    validate_timeline_config(config.timeline_config)
+    if (
+        config.matching_config.confidence_threshold < MIN_RECOMMENDED_CONFIDENCE
+        and not config.force
+    ):
+        raise ConfigurationError(
+            "--min-confidence below 20 may produce false matches; "
+            "use --force to continue"
+        )
+    if (
+        config.timeline_config.direct_tolerance_seconds
+        > MAX_RECOMMENDED_DIRECT_LIMIT_SECONDS
+        and not config.force
+    ):
+        raise ConfigurationError(
+            "--direct-limit above 50 ms may leave a perceptible offset "
+            "uncorrected; use --force to continue"
+        )
     source = config.source.expanduser().resolve()
     target = config.target.expanduser().resolve()
     output = config.output.expanduser().resolve() if config.output is not None else None
@@ -213,4 +252,7 @@ def validate_processing_config(config: ProcessingConfig) -> ProcessingConfig:
         log=log,
         track_name=track_name,
         language=language,
+        matching_config=config.matching_config,
+        timeline_config=config.timeline_config,
+        force=config.force,
     )

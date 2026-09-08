@@ -633,13 +633,15 @@ def analyze_media(
     target_info: MediaInfo,
     source_audio: MediaStream,
     target_audio: MediaStream,
-    matching_config: MatchingConfig = MatchingConfig(),
-    timeline_config: TimelineConfig = TimelineConfig(),
+    matching_config: MatchingConfig | None = None,
+    timeline_config: TimelineConfig | None = None,
     *,
     progress: Callable[[int, int], None] | None = None,
 ) -> MatchingResult:
     """Analyze the temporal relationship between selected audio streams."""
     target_duration = _target_duration(target_info)
+    matching_config = matching_config or config.matching_config
+    timeline_config = timeline_config or config.timeline_config
     return match_audio_streams(
         config.source,
         source_audio.index,
@@ -695,8 +697,8 @@ def process_media(
     target_info: MediaInfo,
     source_audio: MediaStream,
     target_audio: MediaStream,
-    matching_config: MatchingConfig = MatchingConfig(),
-    timeline_config: TimelineConfig = TimelineConfig(),
+    matching_config: MatchingConfig | None = None,
+    timeline_config: TimelineConfig | None = None,
 ) -> MatchingResult:
     """Analyze selected streams and produce a synchronized output."""
     _output_path(config)

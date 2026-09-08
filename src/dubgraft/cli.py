@@ -8,7 +8,11 @@ from pathlib import Path
 from dubgraft import __version__
 from dubgraft.config import (
     ConfigurationError,
+    MAX_RECOMMENDED_DIRECT_LIMIT_SECONDS,
+    MIN_RECOMMENDED_CONFIDENCE,
+    MatchingConfig,
     ProcessingConfig,
+    TimelineConfig,
     validate_log_path,
     validate_processing_config,
 )
@@ -164,6 +168,16 @@ def _stream_index(value: str) -> int:
     return index
 
 
+def _anchor_count(value: str) -> int:
+    try:
+        count = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be an integer of at least 4") from error
+    if count < 4:
+        raise argparse.ArgumentTypeError("must be an integer of at least 4")
+    return count
+
+
 def _language_code(value: str) -> str:
     try:
         return normalize_language_code(value)
@@ -213,6 +227,58 @@ def build_parser() -> argparse.ArgumentParser:
         type=_language_code,
         metavar="CODE",
         help="override the added audio language with an ISO 639-1 or ISO 639-2 code",
+    )
+    analysis_group = parser.add_argument_group("advanced analysis")
+    analysis_group.add_argument(
+        "-r",
+        "--search-radius",
+        type=float,
+        default=MatchingConfig().search_radius_seconds,
+        metavar="SECONDS",
+        help="search distance on each side of an expected match (default: 75)",
+    )
+    analysis_group.add_argument(
+        "-c",
+        "--min-confidence",
+        type=float,
+        default=MatchingConfig().confidence_threshold,
+        metavar="VALUE",
+        help=(
+            "minimum correlation peak confidence "
+            f"(default: 60; below {MIN_RECOMMENDED_CONFIDENCE:g} requires --force)"
+        ),
+    )
+    analysis_group.add_argument(
+        "-a",
+        "--anchors",
+        type=_anchor_count,
+        metavar="NUMBER",
+        help="override the automatic anchor count (minimum: 4)",
+    )
+    analysis_group.add_argument(
+        "-g",
+        "--anchor-gap",
+        type=float,
+        metavar="SECONDS",
+        help="override the automatic minimum distance between anchors",
+    )
+    analysis_group.add_argument(
+        "-d",
+        "--direct-limit",
+        type=float,
+        default=TimelineConfig().direct_tolerance_seconds * 1000,
+        metavar="MS",
+        help=(
+            "largest offset treated as direct "
+            f"(default: 20; above "
+            f"{MAX_RECOMMENDED_DIRECT_LIMIT_SECONDS * 1000:g} requires --force)"
+        ),
+    )
+    analysis_group.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="allow analysis parameters outside recommended safety limits",
     )
     parser.add_argument(
         "-y",
@@ -318,6 +384,16 @@ def parse_processing_config(
         log=arguments.log,
         track_name=arguments.track_name,
         language=arguments.language,
+        matching_config=MatchingConfig(
+            search_radius_seconds=arguments.search_radius,
+            confidence_threshold=arguments.min_confidence,
+            anchor_count=arguments.anchors,
+            minimum_anchor_distance_seconds=arguments.anchor_gap,
+        ),
+        timeline_config=TimelineConfig(
+            direct_tolerance_seconds=arguments.direct_limit / 1000
+        ),
+        force=arguments.force,
     )
 
 
@@ -603,6 +679,8 @@ def _run_processing(
                 target_info,
                 source_audio,
                 target_audio,
+                config.matching_config,
+                config.timeline_config,
                 progress=lambda completed, total: stage.update(
                     f"{completed}/{total} ({completed / total:.0%})"
                 ),

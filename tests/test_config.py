@@ -22,6 +22,8 @@ def test_matching_config_uses_validated_legacy_defaults() -> None:
     assert config.scan_step_seconds == 20
     assert config.search_radius_seconds == 75
     assert config.confidence_threshold == 60
+    assert config.anchor_count is None
+    assert config.minimum_anchor_distance_seconds is None
     assert ANALYSIS_SAMPLE_RATE == 22_050
     assert validate_matching_config(config) is config
 
@@ -33,6 +35,8 @@ def test_matching_config_uses_validated_legacy_defaults() -> None:
         MatchingConfig(scan_step_seconds=-1),
         MatchingConfig(search_radius_seconds=math.inf),
         MatchingConfig(confidence_threshold=-1),
+        MatchingConfig(anchor_count=3),
+        MatchingConfig(minimum_anchor_distance_seconds=-1),
     ],
 )
 def test_matching_config_rejects_invalid_values(config: MatchingConfig) -> None:
@@ -100,6 +104,81 @@ def test_processing_config_allows_missing_output_only_for_analysis(
     )
 
     assert validated.output is None
+
+
+@pytest.mark.parametrize(
+    ("matching_config", "timeline_config", "message"),
+    [
+        (
+            MatchingConfig(confidence_threshold=19),
+            TimelineConfig(),
+            "--min-confidence below 20",
+        ),
+        (
+            MatchingConfig(),
+            TimelineConfig(direct_tolerance_seconds=0.051),
+            "--direct-limit above 50 ms",
+        ),
+    ],
+)
+def test_processing_config_requires_force_outside_safe_limits(
+    tmp_path: Path,
+    matching_config: MatchingConfig,
+    timeline_config: TimelineConfig,
+    message: str,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+
+    with pytest.raises(ConfigurationError, match=message):
+        validate_processing_config(
+            ProcessingConfig(
+                source,
+                target,
+                analyze_only=True,
+                matching_config=matching_config,
+                timeline_config=timeline_config,
+            )
+        )
+
+
+def test_processing_config_force_allows_unsafe_analysis_limits(tmp_path: Path) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+    config = ProcessingConfig(
+        source,
+        target,
+        analyze_only=True,
+        matching_config=MatchingConfig(confidence_threshold=10),
+        timeline_config=TimelineConfig(direct_tolerance_seconds=0.1),
+        force=True,
+    )
+
+    validated = validate_processing_config(config)
+
+    assert validated.matching_config.confidence_threshold == 10
+    assert validated.timeline_config.direct_tolerance_seconds == 0.1
+    assert validated.force is True
+
+
+def test_processing_config_accepts_recommended_limit_boundaries(tmp_path: Path) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+    config = ProcessingConfig(
+        source,
+        target,
+        analyze_only=True,
+        matching_config=MatchingConfig(confidence_threshold=20),
+        timeline_config=TimelineConfig(direct_tolerance_seconds=0.05),
+    )
+
+    assert validate_processing_config(config).force is False
 
 
 def test_processing_config_requires_output_for_rendering(tmp_path: Path) -> None:

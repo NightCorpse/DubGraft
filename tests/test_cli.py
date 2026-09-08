@@ -152,6 +152,108 @@ def test_cli_accepts_audio_metadata() -> None:
     assert config.track_name == "Português Brasileiro"
 
 
+def test_cli_accepts_advanced_analysis_options() -> None:
+    config = parse_processing_config(
+        [
+            "source.mkv",
+            "target.mkv",
+            "output.mkv",
+            "--search-radius",
+            "90",
+            "--min-confidence",
+            "25",
+            "--anchors",
+            "8",
+            "--anchor-gap",
+            "120",
+            "--direct-limit",
+            "35",
+            "--force",
+        ]
+    )
+
+    assert config.matching_config.search_radius_seconds == 90
+    assert config.matching_config.confidence_threshold == 25
+    assert config.matching_config.anchor_count == 8
+    assert config.matching_config.minimum_anchor_distance_seconds == 120
+    assert config.timeline_config.direct_tolerance_seconds == pytest.approx(0.035)
+    assert config.force is True
+
+
+def test_cli_accepts_short_advanced_analysis_options() -> None:
+    config = parse_processing_config(
+        [
+            "source.mkv",
+            "target.mkv",
+            "output.mkv",
+            "-r",
+            "90",
+            "-c",
+            "25",
+            "-a",
+            "8",
+            "-g",
+            "120",
+            "-d",
+            "35",
+            "-f",
+        ]
+    )
+
+    assert config.matching_config.search_radius_seconds == 90
+    assert config.matching_config.confidence_threshold == 25
+    assert config.matching_config.anchor_count == 8
+    assert config.matching_config.minimum_anchor_distance_seconds == 120
+    assert config.timeline_config.direct_tolerance_seconds == pytest.approx(0.035)
+    assert config.force is True
+
+
+def test_cli_rejects_fewer_than_four_anchors(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        parse_processing_config(
+            ["source.mkv", "target.mkv", "output.mkv", "--anchors", "3"]
+        )
+
+    assert exit_info.value.code == 2
+    assert "must be an integer of at least 4" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("option", "value", "message"),
+    [
+        ("--min-confidence", "19", "use --force to continue"),
+        ("--direct-limit", "51", "use --force to continue"),
+    ],
+)
+def test_cli_explains_forced_analysis_limits(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    option: str,
+    value: str,
+    message: str,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                str(source),
+                str(target),
+                "--analyze-only",
+                option,
+                value,
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert message in capsys.readouterr().err
+
+
 def test_cli_rejects_unknown_language(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -716,6 +818,16 @@ def test_cli_prints_full_report_after_summary(
                 "pt",
                 "--track-name",
                 "Dublado",
+                "--search-radius",
+                "90",
+                "--min-confidence",
+                "25",
+                "--anchors",
+                "4",
+                "--anchor-gap",
+                "10",
+                "--direct-limit",
+                "35",
             ]
         )
         == 0
@@ -731,6 +843,9 @@ def test_cli_prints_full_report_after_summary(
     assert "Output validated: yes" in output
     assert "Requested metadata overrides: language=por | title=Dublado" in output
     assert "Added audio: stream 1 | eac3 | por | Dublado" in output
+    assert "Search radius: 90.000s" in output
+    assert "Minimum confidence: 25.000" in output
+    assert "Direct limit: 35.000ms" in output
 
 
 def test_cli_writes_completed_processing_report(
@@ -758,6 +873,16 @@ def test_cli_writes_completed_processing_report(
                 "pt",
                 "--track-name",
                 "Português Brasileiro",
+                "--search-radius",
+                "90",
+                "--min-confidence",
+                "25",
+                "--anchors",
+                "4",
+                "--anchor-gap",
+                "10",
+                "--direct-limit",
+                "35",
             ]
         )
         == 0
@@ -775,6 +900,11 @@ def test_cli_writes_completed_processing_report(
     }
     assert data["processing"]["added_audio"]["language"] == "por"
     assert data["processing"]["added_audio"]["title"] == "Português Brasileiro"
+    assert data["parameters"]["matching"]["search_radius_seconds"] == 90
+    assert data["parameters"]["matching"]["confidence_threshold"] == 25
+    assert data["parameters"]["matching"]["anchor_count"] == 4
+    assert data["parameters"]["matching"]["minimum_anchor_distance_seconds"] == 10
+    assert data["parameters"]["timeline"]["direct_tolerance_seconds"] == 0.035
 
 
 def test_cli_preserves_analysis_report_when_rendering_fails(

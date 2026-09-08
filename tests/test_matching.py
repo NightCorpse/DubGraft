@@ -360,3 +360,30 @@ def test_match_audio_streams_requests_configured_minimum_anchor_count(
     assert result.requested_anchor_count == 5
     assert len(result.anchors) == 5
     assert result.timeline.kind is TimelineKind.DIRECT
+
+
+def test_match_audio_streams_uses_anchor_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidates = tuple(
+        AudioMatch(time, time, 0, 100) for time in (100, 200, 300, 400, 500)
+    )
+    monkeypatch.setattr(
+        "dubgraft.matching.scan_audio_matches", lambda *args, **kwargs: candidates
+    )
+
+    result = match_audio_streams(
+        Path("source.mkv"),
+        1,
+        Path("target.mkv"),
+        2,
+        1000,
+        config=MatchingConfig(
+            anchor_count=4,
+            minimum_anchor_distance_seconds=50,
+        ),
+    )
+
+    assert result.requested_anchor_count == 4
+    assert result.minimum_anchor_distance == 50
+    assert len(result.anchors) == 4

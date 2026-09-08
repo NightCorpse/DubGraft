@@ -12,6 +12,7 @@ from scipy import signal
 
 from dubgraft.config import (
     ANALYSIS_SAMPLE_RATE,
+    ConfigurationError,
     MatchingConfig,
     TimelineConfig,
     validate_matching_config,
@@ -356,12 +357,20 @@ def match_audio_streams(
         config,
         progress=progress,
     )
-    anchor_count = max(
-        calculate_anchor_count(target_duration), timeline_config.minimum_anchor_count
-    )
-    minimum_distance = calculate_minimum_anchor_distance(
-        target_duration, anchor_count
-    )
+    anchor_count = config.anchor_count
+    if anchor_count is None:
+        anchor_count = max(
+            calculate_anchor_count(target_duration), timeline_config.minimum_anchor_count
+        )
+    if anchor_count < timeline_config.minimum_anchor_count:
+        raise ConfigurationError(
+            "anchor count must not be lower than the timeline minimum anchor count"
+        )
+    minimum_distance = config.minimum_anchor_distance_seconds
+    if minimum_distance is None:
+        minimum_distance = calculate_minimum_anchor_distance(
+            target_duration, anchor_count
+        )
     anchors = select_distributed_anchors(
         candidates,
         anchor_count=anchor_count,

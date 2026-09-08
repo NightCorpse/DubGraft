@@ -52,10 +52,12 @@ def build_report(
     status: str,
     error: str | None = None,
     output_info: MediaInfo | None = None,
-    matching_config: MatchingConfig = MatchingConfig(),
-    timeline_config: TimelineConfig = TimelineConfig(),
+    matching_config: MatchingConfig | None = None,
+    timeline_config: TimelineConfig | None = None,
 ) -> dict[str, Any]:
     """Build the stable JSON-compatible representation of one analysis."""
+    matching_config = matching_config or config.matching_config
+    timeline_config = timeline_config or config.timeline_config
     timeline = result.timeline
     strategy = None
     if timeline.kind in {TimelineKind.DIRECT, TimelineKind.STATIC}:
@@ -176,10 +178,12 @@ def format_human_report(
     status: str,
     error: str | None = None,
     output_info: MediaInfo | None = None,
-    matching_config: MatchingConfig = MatchingConfig(),
-    timeline_config: TimelineConfig = TimelineConfig(),
+    matching_config: MatchingConfig | None = None,
+    timeline_config: TimelineConfig | None = None,
 ) -> str:
     """Format candidates, anchors, model quality, and processing decisions."""
+    matching_config = matching_config or config.matching_config
+    timeline_config = timeline_config or config.timeline_config
     timeline = result.timeline
     added_audio = _added_audio(output_info)
     output = str(config.output) if config.output is not None else "not requested"
@@ -208,12 +212,12 @@ def format_human_report(
             f"  Fingerprint size: {matching_config.fingerprint_size_seconds:.3f}s",
             f"  Scan step: {matching_config.scan_step_seconds:.3f}s",
             f"  Search radius: {matching_config.search_radius_seconds:.3f}s",
-            f"  Confidence threshold: {matching_config.confidence_threshold:.3f}",
-            f"  Requested anchors: {result.requested_anchor_count}",
-            f"  Minimum anchor distance: {result.minimum_anchor_distance:.3f}s",
+            f"  Minimum confidence: {matching_config.confidence_threshold:.3f}",
+            f"  Anchors requested: {result.requested_anchor_count}",
+            f"  Anchor gap: {result.minimum_anchor_distance:.3f}s",
             f"  Minimum coverage: {timeline_config.minimum_coverage:.3%}",
             f"  Fallback minimum coverage: {timeline_config.fallback_minimum_coverage:.3%}",
-            f"  Direct tolerance: {timeline_config.direct_tolerance_seconds:.3f}s",
+            f"  Direct limit: {timeline_config.direct_tolerance_seconds * 1000:.3f}ms",
             f"  Drift tolerance: {timeline_config.drift_tolerance_seconds:.3f}s",
             f"  Maximum RMS residual: {timeline_config.maximum_rms_residual_seconds:.3f}s",
             "",

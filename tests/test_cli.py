@@ -158,6 +158,10 @@ def test_cli_accepts_advanced_analysis_options() -> None:
             "source.mkv",
             "target.mkv",
             "output.mkv",
+            "--fingerprint-size",
+            "8",
+            "--scan-step",
+            "10",
             "--search-radius",
             "90",
             "--min-confidence",
@@ -172,6 +176,8 @@ def test_cli_accepts_advanced_analysis_options() -> None:
         ]
     )
 
+    assert config.matching_config.fingerprint_size_seconds == 8
+    assert config.matching_config.scan_step_seconds == 10
     assert config.matching_config.search_radius_seconds == 90
     assert config.matching_config.confidence_threshold == 25
     assert config.matching_config.anchor_count == 8
@@ -186,6 +192,10 @@ def test_cli_accepts_short_advanced_analysis_options() -> None:
             "source.mkv",
             "target.mkv",
             "output.mkv",
+            "-F",
+            "8",
+            "-p",
+            "10",
             "-r",
             "90",
             "-c",
@@ -200,6 +210,8 @@ def test_cli_accepts_short_advanced_analysis_options() -> None:
         ]
     )
 
+    assert config.matching_config.fingerprint_size_seconds == 8
+    assert config.matching_config.scan_step_seconds == 10
     assert config.matching_config.search_radius_seconds == 90
     assert config.matching_config.confidence_threshold == 25
     assert config.matching_config.anchor_count == 8
@@ -252,6 +264,32 @@ def test_cli_explains_forced_analysis_limits(
 
     assert exit_info.value.code == 2
     assert message in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("option", "value", "name"),
+    [
+        ("--fingerprint-size", "0", "fingerprint size"),
+        ("--scan-step", "-1", "scan step"),
+    ],
+)
+def test_cli_rejects_invalid_scan_parameters(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    option: str,
+    value: str,
+    name: str,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+
+    with pytest.raises(SystemExit) as exit_info:
+        main([str(source), str(target), "--analyze-only", option, value])
+
+    assert exit_info.value.code == 2
+    assert f"{name} must be a positive finite number" in capsys.readouterr().err
 
 
 def test_cli_rejects_unknown_language(
@@ -818,6 +856,10 @@ def test_cli_prints_full_report_after_summary(
                 "pt",
                 "--track-name",
                 "Dublado",
+                "--fingerprint-size",
+                "8",
+                "--scan-step",
+                "10",
                 "--search-radius",
                 "90",
                 "--min-confidence",
@@ -843,6 +885,8 @@ def test_cli_prints_full_report_after_summary(
     assert "Output validated: yes" in output
     assert "Requested metadata overrides: language=por | title=Dublado" in output
     assert "Added audio: stream 1 | eac3 | por | Dublado" in output
+    assert "Fingerprint size: 8.000s" in output
+    assert "Scan step: 10.000s" in output
     assert "Search radius: 90.000s" in output
     assert "Minimum confidence: 25.000" in output
     assert "Direct limit: 35.000ms" in output
@@ -873,6 +917,10 @@ def test_cli_writes_completed_processing_report(
                 "pt",
                 "--track-name",
                 "Português Brasileiro",
+                "--fingerprint-size",
+                "8",
+                "--scan-step",
+                "10",
                 "--search-radius",
                 "90",
                 "--min-confidence",
@@ -900,6 +948,8 @@ def test_cli_writes_completed_processing_report(
     }
     assert data["processing"]["added_audio"]["language"] == "por"
     assert data["processing"]["added_audio"]["title"] == "Português Brasileiro"
+    assert data["parameters"]["matching"]["fingerprint_size_seconds"] == 8
+    assert data["parameters"]["matching"]["scan_step_seconds"] == 10
     assert data["parameters"]["matching"]["search_radius_seconds"] == 90
     assert data["parameters"]["matching"]["confidence_threshold"] == 25
     assert data["parameters"]["matching"]["anchor_count"] == 4

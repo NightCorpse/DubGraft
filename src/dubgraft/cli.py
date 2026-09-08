@@ -230,6 +230,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     analysis_group = parser.add_argument_group("advanced analysis")
     analysis_group.add_argument(
+        "-F",
+        "--fingerprint-size",
+        type=float,
+        default=MatchingConfig().fingerprint_size_seconds,
+        metavar="SECONDS",
+        help="duration of each correlated audio sample (default: 6)",
+    )
+    analysis_group.add_argument(
+        "-p",
+        "--scan-step",
+        type=float,
+        default=MatchingConfig().scan_step_seconds,
+        metavar="SECONDS",
+        help="interval between examined timeline points (default: 20)",
+    )
+    analysis_group.add_argument(
         "-r",
         "--search-radius",
         type=float,
@@ -385,6 +401,8 @@ def parse_processing_config(
         track_name=arguments.track_name,
         language=arguments.language,
         matching_config=MatchingConfig(
+            fingerprint_size_seconds=arguments.fingerprint_size,
+            scan_step_seconds=arguments.scan_step,
             search_radius_seconds=arguments.search_radius,
             confidence_threshold=arguments.min_confidence,
             anchor_count=arguments.anchors,

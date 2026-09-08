@@ -122,6 +122,7 @@ def test_anchor_formulas_match_legacy_behavior() -> None:
 
     assert anchor_count == 13
     assert calculate_minimum_anchor_distance(3218, anchor_count) == 148
+    assert calculate_anchor_count(600) == 4
 
 
 def test_select_distributed_anchors_keeps_strong_separated_candidates() -> None:
@@ -146,7 +147,7 @@ def timeline_anchors(*, slope: float = 1.0, intercept: float = 0.0) -> tuple[Aud
             offset=(slope - 1) * target_time + intercept,
             confidence=100,
         )
-        for target_time in (100.0, 500.0, 900.0)
+        for target_time in (100.0, 400.0, 700.0, 900.0)
     )
 
 
@@ -179,16 +180,16 @@ def test_analyze_timeline_classifies_linear_drift() -> None:
 
 
 def test_analyze_timeline_is_inconclusive_with_too_few_anchors() -> None:
-    result = analyze_timeline(timeline_anchors()[:2], 1000)
+    result = analyze_timeline(timeline_anchors()[:3], 1000)
 
     assert result.kind is TimelineKind.INCONCLUSIVE
-    assert result.reason == "at least 3 anchors are required"
+    assert result.reason == "at least 4 anchors are required"
     assert result.slope is None
 
 
 def test_analyze_timeline_is_inconclusive_without_enough_coverage() -> None:
     anchors = tuple(
-        AudioMatch(time, time, 0, 100) for time in (100.0, 200.0, 300.0)
+        AudioMatch(time, time, 0, 100) for time in (100.0, 150.0, 200.0, 300.0)
     )
 
     result = analyze_timeline(anchors, 1000)
@@ -209,6 +210,51 @@ def test_analyze_timeline_rejects_non_linear_anchor_residuals() -> None:
 
     assert result.kind is TimelineKind.INCONCLUSIVE
     assert result.reason == "anchor residuals are too large for a linear timeline"
+
+
+def test_analyze_timeline_uses_strict_duration_fallback() -> None:
+    slope = 0.999
+    intercept = 0.003
+    anchors = tuple(
+        AudioMatch(
+            target_time=time,
+            source_time=slope * time + intercept,
+            offset=(slope - 1) * time + intercept,
+            confidence=100,
+        )
+        for time in (200.0, 560.0, 1000.0, 1760.0)
+    )
+    source_duration = slope * 2863.82 + intercept
+
+    result = analyze_timeline(
+        anchors,
+        2863.82,
+        source_duration=source_duration,
+    )
+
+    assert result.kind is TimelineKind.DRIFT
+    assert result.coverage == pytest.approx(0.544727, abs=1e-6)
+    assert result.used_duration_fallback is True
+
+
+@pytest.mark.parametrize("duration_delta", [-0.101, 0.101])
+def test_analyze_timeline_rejects_fallback_with_incompatible_duration(
+    duration_delta: float,
+) -> None:
+    slope = 0.999
+    anchors = tuple(
+        AudioMatch(time, slope * time, (slope - 1) * time, 100)
+        for time in (200.0, 560.0, 1000.0, 1760.0)
+    )
+
+    result = analyze_timeline(
+        anchors,
+        2863.82,
+        source_duration=slope * 2863.82 + duration_delta,
+    )
+
+    assert result.kind is TimelineKind.INCONCLUSIVE
+    assert result.used_duration_fallback is False
 
 
 def test_analyze_timeline_ignores_a_minority_offset_outlier() -> None:
@@ -238,7 +284,8 @@ def test_analyze_timeline_excludes_outliers_from_coverage() -> None:
 def test_analyze_timeline_falls_back_when_stable_consensus_is_too_small() -> None:
     anchors = (
         AudioMatch(100, 100.1, 0.1, 100),
-        AudioMatch(500, 500.2, 0.2, 100),
+        AudioMatch(350, 350.15, 0.15, 100),
+        AudioMatch(600, 600.2, 0.2, 100),
         AudioMatch(900, 900.3, 0.3, 100),
     )
 
@@ -279,3 +326,27 @@ def test_match_audio_streams_applies_timeline_configuration(
     )
 
     assert result.timeline.kind is TimelineKind.STATIC
+
+
+def test_match_audio_streams_requests_configured_minimum_anchor_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    anchors = tuple(
+        AudioMatch(time, time, 0, 100) for time in (100, 300, 500, 700, 900)
+    )
+    monkeypatch.setattr(
+        "dubgraft.matching.scan_audio_matches", lambda *args, **kwargs: anchors
+    )
+
+    result = match_audio_streams(
+        Path("source.mkv"),
+        1,
+        Path("target.mkv"),
+        2,
+        1000,
+        timeline_config=TimelineConfig(minimum_anchor_count=5),
+    )
+
+    assert result.requested_anchor_count == 5
+    assert len(result.anchors) == 5
+    assert result.timeline.kind is TimelineKind.DIRECT

@@ -49,13 +49,17 @@ def test_matching_config_accepts_safe_confidence_thresholds(
 def test_timeline_config_uses_validated_defaults() -> None:
     config = TimelineConfig()
 
-    assert config.minimum_anchor_count == 3
+    assert config.minimum_anchor_count == 4
     assert config.minimum_coverage == 0.6
+    assert config.fallback_minimum_coverage == 0.5
     assert config.stability_tolerance_seconds == 0.05
     assert config.minimum_stable_ratio == 0.8
     assert config.direct_tolerance_seconds == 0.02
     assert config.drift_tolerance_seconds == 0.05
     assert config.maximum_rms_residual_seconds == 0.05
+    assert config.fallback_maximum_rms_residual_seconds == 0.01
+    assert config.fallback_maximum_residual_seconds == 0.02
+    assert config.fallback_duration_tolerance_seconds == 0.1
     assert validate_timeline_config(config) is config
 
 
@@ -66,9 +70,13 @@ def test_timeline_config_uses_validated_defaults() -> None:
         TimelineConfig(minimum_anchor_count=2.5),  # type: ignore[arg-type]
         TimelineConfig(minimum_anchor_count=True),
         TimelineConfig(minimum_coverage=1.1),
+        TimelineConfig(fallback_minimum_coverage=-0.1),
+        TimelineConfig(minimum_coverage=0.5, fallback_minimum_coverage=0.6),
         TimelineConfig(minimum_stable_ratio=-0.1),
         TimelineConfig(direct_tolerance_seconds=-0.001),
         TimelineConfig(maximum_rms_residual_seconds=math.inf),
+        TimelineConfig(fallback_maximum_residual_seconds=-1),
+        TimelineConfig(fallback_duration_tolerance_seconds=math.inf),
     ],
 )
 def test_timeline_config_rejects_invalid_values(config: TimelineConfig) -> None:

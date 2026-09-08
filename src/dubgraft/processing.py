@@ -8,7 +8,12 @@ import tempfile
 from pathlib import Path
 
 from dubgraft.config import MatchingConfig, ProcessingConfig, TimelineConfig
-from dubgraft.matching import MatchingResult, TimelineAnalysis, TimelineKind, match_audio_streams
+from dubgraft.matching import (
+    MatchingResult,
+    TimelineAnalysis,
+    TimelineKind,
+    match_audio_streams,
+)
 from dubgraft.media import FFmpegError, MediaInfo, MediaStream
 
 
@@ -41,6 +46,50 @@ def _run_ffmpeg(command: list[str], operation: str) -> None:
         raise FFmpegError(detail)
 
 
+def _publish_output(temporary_output: Path, config: ProcessingConfig) -> None:
+    if config.overwrite:
+        temporary_output.replace(config.output)
+        return
+    try:
+        os.link(temporary_output, config.output)
+    except FileExistsError as error:
+        raise ProcessingError(
+            f"Output already exists: {config.output}; use --overwrite to replace it"
+        ) from error
+
+
+def _target_duration(target_info: MediaInfo) -> float:
+    duration = target_info.duration
+    if duration is None or not math.isfinite(duration) or duration <= 0:
+        raise ProcessingError("Target duration is unavailable")
+    return duration
+
+
+def _source_audio_duration(
+    source_info: MediaInfo, source_audio: MediaStream
+) -> float | None:
+    for duration in (source_audio.duration, source_info.duration):
+        if duration is not None and math.isfinite(duration) and duration > 0:
+            return duration
+    return None
+
+
+def _audio_metadata_arguments(
+    target_info: MediaInfo, source_audio: MediaStream
+) -> list[str]:
+    audio_index = sum(stream.kind == "audio" for stream in target_info.streams)
+    arguments = []
+    if source_audio.language:
+        arguments.extend(
+            [f"-metadata:s:a:{audio_index}", f"language={source_audio.language}"]
+        )
+    if source_audio.title:
+        arguments.extend(
+            [f"-metadata:s:a:{audio_index}", f"title={source_audio.title}"]
+        )
+    return arguments
+
+
 def mux_source_audio(
     config: ProcessingConfig,
     target_info: MediaInfo,
@@ -52,16 +101,7 @@ def mux_source_audio(
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
         raise FFmpegError("ffmpeg was not found in PATH")
-    if (
-        target_info.duration is None
-        or not math.isfinite(target_info.duration)
-        or target_info.duration <= 0
-    ):
-        raise ProcessingError("Target duration is unavailable")
-
-    target_audio_count = sum(
-        stream.kind == "audio" for stream in target_info.streams
-    )
+    target_duration = _target_duration(target_info)
     try:
         with tempfile.TemporaryDirectory(
             prefix=".dubgraft-", dir=config.output.parent
@@ -118,71 +158,154 @@ def mux_source_audio(
                     "copy",
                     "-copy_unknown",
                     "-t",
-                    str(target_info.duration),
+                    str(target_duration),
                     "-avoid_negative_ts",
                     "disabled",
                 ]
             )
-            if source_audio.language:
-                command.extend(
-                    [
-                        f"-metadata:s:a:{target_audio_count}",
-                        f"language={source_audio.language}",
-                    ]
-                )
-            if source_audio.title:
-                command.extend(
-                    [
-                        f"-metadata:s:a:{target_audio_count}",
-                        f"title={source_audio.title}",
-                    ]
-                )
+            command.extend(_audio_metadata_arguments(target_info, source_audio))
             command.append(str(temporary_output))
             _run_ffmpeg(command, "mux")
             if not temporary_output.is_file():
                 raise FFmpegError("ffmpeg did not create the output file")
-            if config.overwrite:
-                temporary_output.replace(config.output)
-            else:
-                try:
-                    os.link(temporary_output, config.output)
-                except FileExistsError as error:
-                    raise ProcessingError(
-                        f"Output already exists: {config.output}; use --overwrite to replace it"
-                    ) from error
+            _publish_output(temporary_output, config)
+    except OSError as error:
+        raise ProcessingError(f"could not publish Output: {error}") from error
+
+
+def mux_drift_audio(
+    config: ProcessingConfig,
+    target_info: MediaInfo,
+    source_audio: MediaStream,
+    analysis: TimelineAnalysis,
+) -> None:
+    """Continuously retime and append Source audio to the Target timeline."""
+    target_duration = _target_duration(target_info)
+    slope = analysis.slope
+    intercept = analysis.intercept
+    if (
+        slope is None
+        or intercept is None
+        or not math.isfinite(slope)
+        or not math.isfinite(intercept)
+        or slope <= 0
+    ):
+        raise ProcessingError("drift timeline has an invalid linear model")
+    if source_audio.channels is not None and source_audio.channels > 6:
+        raise ProcessingError(
+            "E-AC-3 drift output supports at most 6 audio channels"
+        )
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise FFmpegError("ffmpeg was not found in PATH")
+
+    trim_start = max(intercept, 0.0)
+    delay = max(-intercept / slope, 0.0)
+    filters = [
+        "asetpts=PTS-STARTPTS",
+        f"atrim=start={trim_start:.9f}",
+        "asetpts=PTS-STARTPTS",
+        f"atempo={slope:.12f}",
+    ]
+    if delay > 0:
+        filters.append(f"adelay={delay * 1000:.9f}:all=1")
+    filters.extend(["apad", f"atrim=duration={target_duration:.9f}"])
+    filter_graph = f"[0:{source_audio.index}]" + ",".join(filters) + "[dubbed]"
+
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=".dubgraft-", dir=config.output.parent
+        ) as temporary_directory:
+            reconstructed_audio = Path(temporary_directory) / "reconstructed-audio.mka"
+            reconstruction_command = [
+                ffmpeg,
+                "-v",
+                "error",
+                "-y",
+                "-i",
+                str(config.source),
+                "-filter_complex",
+                filter_graph,
+                "-map",
+                "[dubbed]",
+                "-c:a",
+                "eac3",
+                "-b:a",
+                "640k",
+                "-f",
+                "matroska",
+                str(reconstructed_audio),
+            ]
+            _run_ffmpeg(reconstruction_command, "drift reconstruction")
+            if not reconstructed_audio.is_file():
+                raise FFmpegError("ffmpeg did not create the reconstructed audio")
+
+            temporary_output = Path(temporary_directory) / config.output.name
+            command = [
+                ffmpeg,
+                "-v",
+                "error",
+                "-y",
+                "-i",
+                str(config.target),
+                "-i",
+                str(reconstructed_audio),
+                "-map",
+                "0",
+                "-map",
+                "1:0",
+                "-map_metadata",
+                "0",
+                "-map_chapters",
+                "0",
+                "-c",
+                "copy",
+                "-copy_unknown",
+                "-max_interleave_delta",
+                "0",
+                "-t",
+                str(target_duration),
+                "-avoid_negative_ts",
+                "disabled",
+            ]
+            command.extend(_audio_metadata_arguments(target_info, source_audio))
+            command.append(str(temporary_output))
+            _run_ffmpeg(command, "mux")
+            if not temporary_output.is_file():
+                raise FFmpegError("ffmpeg did not create the output file")
+            _publish_output(temporary_output, config)
     except OSError as error:
         raise ProcessingError(f"could not publish Output: {error}") from error
 
 
 def process_media(
     config: ProcessingConfig,
+    source_info: MediaInfo,
     target_info: MediaInfo,
     source_audio: MediaStream,
     target_audio: MediaStream,
     matching_config: MatchingConfig = MatchingConfig(),
     timeline_config: TimelineConfig = TimelineConfig(),
 ) -> MatchingResult:
-    """Analyze selected streams and produce direct or statically aligned output."""
-    if (
-        target_info.duration is None
-        or not math.isfinite(target_info.duration)
-        or target_info.duration <= 0
-    ):
-        raise ProcessingError("Target duration is unavailable")
+    """Analyze selected streams and produce a synchronized output."""
+    target_duration = _target_duration(target_info)
 
     result = match_audio_streams(
         config.source,
         source_audio.index,
         config.target,
         target_audio.index,
-        target_info.duration,
+        target_duration,
         matching_config,
         timeline_config,
+        source_duration=_source_audio_duration(source_info, source_audio),
     )
     if result.timeline.kind is TimelineKind.INCONCLUSIVE:
         raise InconclusiveTimelineError(result.timeline)
     if result.timeline.kind is TimelineKind.DRIFT:
-        raise ProcessingError("timeline requires drift reconstruction")
+        mux_drift_audio(config, target_info, source_audio, result.timeline)
+        return result
 
     offset = 0.0
     if result.timeline.kind is TimelineKind.STATIC:

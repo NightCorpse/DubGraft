@@ -46,6 +46,7 @@ class TimelineAnalysis:
     stable_ratio: float
     drift_over_duration: float | None
     reason: str | None = None
+    used_duration_fallback: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,10 +133,10 @@ def scan_audio_matches(
 
 
 def calculate_anchor_count(duration: float) -> int:
-    """Calculate the legacy-compatible desired number of anchors."""
+    """Calculate the desired number of distributed anchors."""
     if not math.isfinite(duration) or duration <= 0:
         raise ValueError("duration must be a positive finite number")
-    return max(3, round(duration / 240.0))
+    return max(4, round(duration / 240.0))
 
 
 def calculate_minimum_anchor_distance(duration: float, anchor_count: int) -> float:
@@ -175,11 +176,17 @@ def analyze_timeline(
     anchors: tuple[AudioMatch, ...],
     target_duration: float,
     config: TimelineConfig = TimelineConfig(),
+    *,
+    source_duration: float | None = None,
 ) -> TimelineAnalysis:
     """Fit and classify the temporal relationship represented by audio anchors."""
     validate_timeline_config(config)
     if not math.isfinite(target_duration) or target_duration <= 0:
         raise ValueError("target duration must be a positive finite number")
+    if source_duration is not None and (
+        not math.isfinite(source_duration) or source_duration <= 0
+    ):
+        raise ValueError("source duration must be a positive finite number")
     for anchor in anchors:
         values = (
             anchor.target_time,
@@ -269,8 +276,23 @@ def analyze_timeline(
     if not all(math.isfinite(float(value)) for value in values):
         raise ValueError("timeline regression produced non-finite values")
 
+    predicted_source_end = float(slope * target_duration + intercept)
+    duration_error = (
+        abs(predicted_source_end - source_duration)
+        if source_duration is not None
+        else None
+    )
+    used_duration_fallback = (
+        coverage < config.minimum_coverage
+        and coverage >= config.fallback_minimum_coverage
+        and rms_residual <= config.fallback_maximum_rms_residual_seconds
+        and maximum_residual <= config.fallback_maximum_residual_seconds
+        and duration_error is not None
+        and duration_error <= config.fallback_duration_tolerance_seconds
+    )
+
     reason = None
-    if coverage < config.minimum_coverage:
+    if coverage < config.minimum_coverage and not used_duration_fallback:
         kind = TimelineKind.INCONCLUSIVE
         reason = "anchors do not cover enough of the Target timeline"
     elif rms_residual > config.maximum_rms_residual_seconds:
@@ -297,6 +319,7 @@ def analyze_timeline(
         stable_ratio,
         drift_over_duration,
         reason,
+        used_duration_fallback,
     )
 
 
@@ -308,8 +331,11 @@ def match_audio_streams(
     target_duration: float,
     config: MatchingConfig = MatchingConfig(),
     timeline_config: TimelineConfig = TimelineConfig(),
+    *,
+    source_duration: float | None = None,
 ) -> MatchingResult:
     """Run scanning and distributed anchor selection for two audio streams."""
+    validate_timeline_config(timeline_config)
     candidates = scan_audio_matches(
         source,
         source_stream_index,
@@ -318,7 +344,9 @@ def match_audio_streams(
         target_duration,
         config,
     )
-    anchor_count = calculate_anchor_count(target_duration)
+    anchor_count = max(
+        calculate_anchor_count(target_duration), timeline_config.minimum_anchor_count
+    )
     minimum_distance = calculate_minimum_anchor_distance(
         target_duration, anchor_count
     )
@@ -327,5 +355,10 @@ def match_audio_streams(
         anchor_count=anchor_count,
         minimum_distance=minimum_distance,
     )
-    timeline = analyze_timeline(anchors, target_duration, timeline_config)
+    timeline = analyze_timeline(
+        anchors,
+        target_duration,
+        timeline_config,
+        source_duration=source_duration,
+    )
     return MatchingResult(candidates, anchors, anchor_count, minimum_distance, timeline)

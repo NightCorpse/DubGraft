@@ -325,7 +325,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         validate_ffmpeg()
     except FFmpegError as error:
         parser.exit(1, f"{parser.prog}: error: {error}\n")
-    _, source_audio = _select_processing_audio(
+    source_info, source_audio = _select_processing_audio(
         parser,
         "Source",
         config.source,
@@ -340,7 +340,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "-T INDEX or --target-audio",
     )
     try:
-        process_media(config, target_info, source_audio, target_audio)
+        process_media(config, source_info, target_info, source_audio, target_audio)
     except InconclusiveTimelineError as error:
         parser.exit(1, f"{parser.prog}: error: inconclusive analysis: {error}\n")
     except (FFmpegError, ProcessingError) as error:

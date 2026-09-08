@@ -28,13 +28,17 @@ class MatchingConfig:
 
 @dataclass(frozen=True, slots=True)
 class TimelineConfig:
-    minimum_anchor_count: int = 3
+    minimum_anchor_count: int = 4
     minimum_coverage: float = 0.6
+    fallback_minimum_coverage: float = 0.5
     stability_tolerance_seconds: float = 0.05
     minimum_stable_ratio: float = 0.8
     direct_tolerance_seconds: float = 0.02
     drift_tolerance_seconds: float = 0.05
     maximum_rms_residual_seconds: float = 0.05
+    fallback_maximum_rms_residual_seconds: float = 0.01
+    fallback_maximum_residual_seconds: float = 0.02
+    fallback_duration_tolerance_seconds: float = 0.1
 
 
 class ConfigurationError(ValueError):
@@ -71,6 +75,7 @@ def validate_timeline_config(config: TimelineConfig) -> TimelineConfig:
         raise ConfigurationError("minimum anchor count must be at least 2")
     for name, value in (
         ("minimum coverage", config.minimum_coverage),
+        ("fallback minimum coverage", config.fallback_minimum_coverage),
         ("minimum stable ratio", config.minimum_stable_ratio),
     ):
         if not math.isfinite(value) or not 0 <= value <= 1:
@@ -80,9 +85,19 @@ def validate_timeline_config(config: TimelineConfig) -> TimelineConfig:
         ("direct tolerance", config.direct_tolerance_seconds),
         ("drift tolerance", config.drift_tolerance_seconds),
         ("maximum RMS residual", config.maximum_rms_residual_seconds),
+        (
+            "fallback maximum RMS residual",
+            config.fallback_maximum_rms_residual_seconds,
+        ),
+        ("fallback maximum residual", config.fallback_maximum_residual_seconds),
+        ("fallback duration tolerance", config.fallback_duration_tolerance_seconds),
     ):
         if not math.isfinite(value) or value < 0:
             raise ConfigurationError(f"{name} must be finite and non-negative")
+    if config.fallback_minimum_coverage > config.minimum_coverage:
+        raise ConfigurationError(
+            "fallback minimum coverage must not exceed minimum coverage"
+        )
     return config
 
 

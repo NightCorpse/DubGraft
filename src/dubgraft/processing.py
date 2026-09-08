@@ -8,7 +8,9 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable, Iterable, Iterator
+from dataclasses import replace
 from pathlib import Path
+from typing import Never
 
 from dubgraft.config import (
     ConfigurationError,
@@ -230,6 +232,21 @@ def _audio_metadata_arguments(
 ) -> list[str]:
     audio_index = sum(stream.kind == "audio" for stream in target_info.streams)
     arguments = []
+    language, title = _audio_metadata(config, source_audio)
+    if language:
+        arguments.extend(
+            [f"-metadata:s:a:{audio_index}", f"language={language}"]
+        )
+    if title:
+        arguments.extend(
+            [f"-metadata:s:a:{audio_index}", f"title={title}"]
+        )
+    return arguments
+
+
+def _audio_metadata(
+    config: ProcessingConfig, source_audio: MediaStream
+) -> tuple[str | None, str | None]:
     if config.language is None:
         language = source_audio.language
     else:
@@ -244,15 +261,79 @@ def _audio_metadata_arguments(
             title = normalize_track_name(config.track_name)
         except ConfigurationError as error:
             raise ProcessingError(str(error)) from error
-    if language:
-        arguments.extend(
-            [f"-metadata:s:a:{audio_index}", f"language={language}"]
+    return language, title
+
+
+def _validate_output(
+    path: Path,
+    config: ProcessingConfig,
+    target_info: MediaInfo,
+    source_audio: MediaStream,
+    *,
+    audio_codec: str,
+) -> MediaInfo:
+    def fail(detail: str) -> Never:
+        raise ProcessingError(
+            f"generated Output failed validation: {detail}; Output was not published"
         )
-    if title:
-        arguments.extend(
-            [f"-metadata:s:a:{audio_index}", f"title={title}"]
+
+    try:
+        output_info = probe_media(path)
+    except MediaProbeError as error:
+        fail(str(error))
+
+    expected_stream_count = len(target_info.streams) + 1
+    if len(output_info.streams) != expected_stream_count:
+        fail(
+            f"expected {expected_stream_count} streams, found "
+            f"{len(output_info.streams)}"
         )
-    return arguments
+
+    for position, (target_stream, output_stream) in enumerate(
+        zip(target_info.streams, output_info.streams)
+    ):
+        properties = ["kind", "codec", "language", "title"]
+        if target_stream.kind == "video":
+            properties.extend(["width", "height", "pixel_format"])
+        elif target_stream.kind == "audio":
+            properties.extend(["channels", "channel_layout", "sample_rate"])
+        for name in properties:
+            expected = getattr(target_stream, name)
+            actual = getattr(output_stream, name)
+            if expected is not None and actual != expected:
+                fail(
+                    f"Target stream {position} {name} expected {expected!r}, "
+                    f"found {actual!r}"
+                )
+
+    added_audio = output_info.streams[-1]
+    if added_audio.kind != "audio":
+        fail(f"added stream expected audio, found {added_audio.kind}")
+
+    language, title = _audio_metadata(config, source_audio)
+    for name, expected, actual in (
+        ("codec", audio_codec, added_audio.codec),
+        ("channel count", source_audio.channels, added_audio.channels),
+        ("channel layout", source_audio.channel_layout, added_audio.channel_layout),
+        ("sample rate", source_audio.sample_rate, added_audio.sample_rate),
+        ("language", language, added_audio.language),
+        ("title", title, added_audio.title),
+    ):
+        if expected is not None and actual != expected:
+            fail(f"added audio {name} expected {expected!r}, found {actual!r}")
+
+    target_duration = _target_duration(target_info)
+    output_duration = output_info.duration
+    if (
+        output_duration is None
+        or not math.isfinite(output_duration)
+        or abs(output_duration - target_duration) > 0.1
+    ):
+        fail(
+            f"duration expected {target_duration:.3f}s, found "
+            f"{output_duration if output_duration is not None else 'unavailable'}"
+        )
+    return output_info
 
 
 def _validate_reconstructed_audio(path: Path, source_audio: MediaStream) -> None:
@@ -284,7 +365,7 @@ def mux_source_audio(
     offset: float,
     source_duration: float | None = None,
     progress: RenderProgress | None = None,
-) -> None:
+) -> MediaInfo:
     """Copy the Target and append one Source audio stream at a static offset."""
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
@@ -374,7 +455,15 @@ def mux_source_audio(
             )
             if not temporary_output.is_file():
                 raise FFmpegError("ffmpeg did not create the output file")
+            output_info = _validate_output(
+                temporary_output,
+                config,
+                target_info,
+                source_audio,
+                audio_codec=source_audio.codec,
+            )
             _publish_output(temporary_output, config)
+            return replace(output_info, path=output.expanduser().resolve())
     except OSError as error:
         raise ProcessingError(f"could not publish Output: {error}") from error
 
@@ -386,7 +475,7 @@ def mux_drift_audio(
     analysis: TimelineAnalysis,
     *,
     progress: RenderProgress | None = None,
-) -> None:
+) -> MediaInfo:
     """Continuously retime and append Source audio to the Target timeline."""
     target_duration = _target_duration(target_info)
     slope = analysis.slope
@@ -525,7 +614,15 @@ def mux_drift_audio(
             )
             if not temporary_output.is_file():
                 raise FFmpegError("ffmpeg did not create the output file")
+            output_info = _validate_output(
+                temporary_output,
+                config,
+                target_info,
+                source_audio,
+                audio_codec="eac3",
+            )
             _publish_output(temporary_output, config)
+            return replace(output_info, path=output.expanduser().resolve())
     except OSError as error:
         raise ProcessingError(f"could not publish Output: {error}") from error
 
@@ -564,26 +661,25 @@ def render_media(
     *,
     source_duration: float | None = None,
     progress: RenderProgress | None = None,
-) -> None:
+) -> MediaInfo:
     """Render a previously analyzed and conclusive matching result."""
     if result.timeline.kind is TimelineKind.INCONCLUSIVE:
         raise InconclusiveTimelineError(result.timeline, result)
     if result.timeline.kind is TimelineKind.DRIFT:
-        mux_drift_audio(
+        return mux_drift_audio(
             config,
             target_info,
             source_audio,
             result.timeline,
             progress=progress,
         )
-        return
 
     offset = 0.0
     if result.timeline.kind is TimelineKind.STATIC:
         if result.timeline.median_offset is None:
             raise ProcessingError("static timeline has no offset")
         offset = result.timeline.median_offset
-    mux_source_audio(
+    return mux_source_audio(
         config,
         target_info,
         source_audio,

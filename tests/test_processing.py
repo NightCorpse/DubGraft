@@ -13,6 +13,7 @@ from dubgraft.processing import (
     ProcessingError,
     _iter_progress_times,
     _run_ffmpeg,
+    _validate_output,
     _validate_reconstructed_audio,
     mux_drift_audio,
     mux_source_audio,
@@ -132,6 +133,30 @@ def processing_media(
     return config, source_info, target_info, source_audio, target_audio
 
 
+def output_info(
+    path: Path,
+    target_info: MediaInfo,
+    source_audio: MediaStream,
+    *,
+    language: str = "por",
+    title: str = "Brazilian Portuguese",
+) -> MediaInfo:
+    added_audio = replace(
+        source_audio,
+        index=len(target_info.streams),
+        language=language,
+        title=title,
+    )
+    return MediaInfo(
+        path,
+        target_info.container,
+        target_info.duration,
+        None,
+        None,
+        (*target_info.streams, added_audio),
+    )
+
+
 @pytest.mark.parametrize(
     ("offset", "option", "value"),
     [(2.5, "-ss", "2.5"), (-1.25, "-itsoffset", "1.25")],
@@ -153,6 +178,10 @@ def test_mux_source_audio_preserves_target_and_applies_static_offset(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr("dubgraft.processing.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "dubgraft.processing._validate_output",
+        lambda path, *args, **kwargs: output_info(path, target_info, source_audio),
+    )
     mux_source_audio(config, target_info, source_audio, offset=offset)
 
     command = commands[-1]
@@ -193,6 +222,12 @@ def test_mux_source_audio_overrides_metadata(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr("dubgraft.processing.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "dubgraft.processing._validate_output",
+        lambda path, *args, **kwargs: output_info(
+            path, target_info, source_audio, language="ger", title="German Dub"
+        ),
+    )
 
     mux_source_audio(config, target_info, source_audio, offset=0)
 
@@ -354,6 +389,10 @@ def test_mux_source_audio_does_not_publish_over_a_late_output(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr("dubgraft.processing.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "dubgraft.processing._validate_output",
+        lambda path, *args, **kwargs: output_info(path, target_info, source_audio),
+    )
 
     with pytest.raises(ProcessingError, match="use --overwrite"):
         mux_source_audio(config, target_info, source_audio, offset=0)
@@ -384,6 +423,10 @@ def test_mux_drift_audio_retimes_only_the_new_audio_stream(
     monkeypatch.setattr(
         "dubgraft.processing._validate_reconstructed_audio", lambda *args: None
     )
+    monkeypatch.setattr(
+        "dubgraft.processing._validate_output",
+        lambda path, *args, **kwargs: output_info(path, target_info, source_audio),
+    )
 
     mux_drift_audio(
         config,
@@ -408,6 +451,73 @@ def test_mux_drift_audio_retimes_only_the_new_audio_stream(
     assert command[command.index("-map", command.index("-map") + 1) + 1] == "1:0"
     assert command[command.index("-max_interleave_delta") + 1] == "0"
     assert config.output.is_file()
+
+
+def test_output_validation_accepts_expected_mux(
+    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+    expected = output_info(config.output, target_info, source_audio)
+    monkeypatch.setattr("dubgraft.processing.probe_media", lambda path: expected)
+
+    assert (
+        _validate_output(
+            config.output,
+            config,
+            target_info,
+            source_audio,
+            audio_codec="eac3",
+        )
+        is expected
+    )
+
+
+def test_output_validation_rejects_metadata_change(
+    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+    invalid = output_info(
+        config.output, target_info, source_audio, language="eng"
+    )
+    monkeypatch.setattr("dubgraft.processing.probe_media", lambda path: invalid)
+
+    with pytest.raises(
+        ProcessingError, match="language expected 'por', found 'eng'.*not published"
+    ):
+        _validate_output(
+            config.output,
+            config,
+            target_info,
+            source_audio,
+            audio_codec="eac3",
+        )
+
+
+def test_mux_does_not_publish_failed_validation(
+    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+    monkeypatch.setattr("dubgraft.processing.shutil.which", lambda name: "/bin/ffmpeg")
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        Path(command[-1]).touch()
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("dubgraft.processing.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "dubgraft.processing._validate_output",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            ProcessingError("generated Output failed validation")
+        ),
+    )
+
+    with pytest.raises(ProcessingError, match="failed validation"):
+        mux_source_audio(config, target_info, source_audio, offset=0)
+
+    assert not config.output.exists()
 
 
 def test_mux_drift_audio_rejects_unsupported_channel_count(

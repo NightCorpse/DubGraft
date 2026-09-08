@@ -271,7 +271,7 @@ def _parse_stream(raw: Any) -> MediaStream:
         channels=_optional_int(raw.get("channels")),
         channel_layout=raw.get("channel_layout"),
         language=tags.get("language"),
-        title=tags.get("title"),
+        title=tags.get("title") or tags.get("name"),
         default=bool(disposition.get("default")),
         forced=bool(disposition.get("forced")),
         hearing_impaired=bool(disposition.get("hearing_impaired")),

@@ -216,7 +216,7 @@ def test_probe_media_reads_ffprobe_json(
                 "channels": 6,
                 "channel_layout": "5.1(side)",
                 "bit_rate": "640000",
-                "tags": {"language": "eng", "title": "English"},
+                "tags": {"language": "eng", "name": "English"},
             },
             {"index": 2, "codec_type": "subtitle", "codec_name": "subrip"},
         ],
@@ -247,6 +247,7 @@ def test_probe_media_reads_ffprobe_json(
     assert info.streams[0].frame_rate == pytest.approx(24000 / 1001)
     assert info.streams[0].dolby_vision == "Dolby Vision P8.1"
     assert info.streams[1].language == "eng"
+    assert info.streams[1].title == "English"
     assert info.streams[1].channels == 6
     command, options = calls[0]
     assert command[0] == "/bin/ffprobe"

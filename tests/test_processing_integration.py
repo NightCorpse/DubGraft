@@ -103,7 +103,7 @@ def test_synthetic_direct_static_and_drift_outputs(
             0,
             -0.004,
         )
-        mux_drift_audio(
+        validated = mux_drift_audio(
             config,
             target_info,
             source_audio,
@@ -111,7 +111,7 @@ def test_synthetic_direct_static_and_drift_outputs(
             progress=lambda *values: progress.append(values),
         )
     else:
-        mux_source_audio(
+        validated = mux_source_audio(
             config,
             target_info,
             source_audio,
@@ -135,6 +135,7 @@ def test_synthetic_direct_static_and_drift_outputs(
     if kind is TimelineKind.STATIC:
         assert progress[0][2] == source_info.duration
 
+    assert validated.path == output.resolve()
     output_info = probe_media(output)
     assert output_info.duration == pytest.approx(target_info.duration, abs=0.05)
     assert [stream.kind for stream in output_info.streams] == ["video", "audio", "audio"]

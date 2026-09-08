@@ -9,6 +9,7 @@ from dubgraft.config import (
     MatchingConfig,
     ProcessingConfig,
     TimelineConfig,
+    validate_log_path,
     validate_matching_config,
     validate_processing_config,
     validate_timeline_config,
@@ -191,6 +192,44 @@ def test_processing_config_requires_output_for_rendering(tmp_path: Path) -> None
         validate_processing_config(ProcessingConfig(source, target))
 
 
+@pytest.mark.parametrize(
+    ("output_name", "expected_name"),
+    [
+        ("output", "output.mkv"),
+        ("output.mkv", "output.mkv"),
+        ("output.mp4", "output.mp4"),
+        ("output.avi", "output.avi"),
+    ],
+)
+def test_processing_config_resolves_output_extension(
+    tmp_path: Path, output_name: str, expected_name: str
+) -> None:
+    source = tmp_path / "source.mp4"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+
+    validated = validate_processing_config(
+        ProcessingConfig(source, target, tmp_path / output_name)
+    )
+
+    assert validated.output == (tmp_path / expected_name).resolve()
+
+
+def test_processing_config_requires_extension_without_target_extension(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.mp4"
+    target = tmp_path / "target"
+    source.touch()
+    target.touch()
+
+    with pytest.raises(ConfigurationError, match="when Target has none"):
+        validate_processing_config(
+            ProcessingConfig(source, target, tmp_path / "output")
+        )
+
+
 def test_processing_config_resolves_log_path(tmp_path: Path) -> None:
     source = tmp_path / "source.mkv"
     target = tmp_path / "target.mkv"
@@ -245,4 +284,23 @@ def test_processing_config_rejects_log_collisions(tmp_path: Path) -> None:
     with pytest.raises(ConfigurationError, match="Log must not replace"):
         validate_processing_config(
             ProcessingConfig(source, target, analyze_only=True, log=source)
+        )
+
+
+def test_processing_config_rejects_log_collision_with_inferred_output(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.mp4"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+
+    with pytest.raises(ConfigurationError, match="Log must not replace"):
+        validate_log_path(
+            ProcessingConfig(
+                source,
+                target,
+                tmp_path / "output",
+                log=tmp_path / "output.mkv",
+            )
         )

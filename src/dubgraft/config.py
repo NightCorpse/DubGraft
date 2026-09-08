@@ -72,6 +72,18 @@ def normalize_track_name(value: str) -> str:
     return track_name
 
 
+def _resolve_output_path(config: ProcessingConfig) -> Path | None:
+    if config.output is None:
+        return None
+    output = config.output.expanduser().resolve()
+    if output.suffix:
+        return output
+    target = config.target.expanduser().resolve()
+    if not target.suffix:
+        raise ConfigurationError("Output must include an extension when Target has none")
+    return output.with_name(output.name + target.suffix)
+
+
 def validate_log_path(config: ProcessingConfig) -> Path | None:
     """Resolve a safe log path before validating the complete request."""
     if config.log is None:
@@ -81,7 +93,7 @@ def validate_log_path(config: ProcessingConfig) -> Path | None:
         config.source.expanduser().resolve(),
         config.target.expanduser().resolve(),
     }
-    for path in (config.output, config.report):
+    for path in (_resolve_output_path(config), config.report):
         if path is not None:
             reserved_paths.add(path.expanduser().resolve())
     if log in reserved_paths:
@@ -184,7 +196,7 @@ def validate_processing_config(config: ProcessingConfig) -> ProcessingConfig:
         )
     source = config.source.expanduser().resolve()
     target = config.target.expanduser().resolve()
-    output = config.output.expanduser().resolve() if config.output is not None else None
+    output = _resolve_output_path(config)
     report = config.report.expanduser().resolve() if config.report is not None else None
     log = validate_log_path(config)
     language = config.language

@@ -118,6 +118,17 @@ def test_cli_accepts_all_processing_forms(arguments: list[str]) -> None:
     )
 
 
+def test_cli_help_explains_inherited_output_extension(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--help"])
+
+    assert exit_info.value.code == 0
+    output = " ".join(capsys.readouterr().out.split())
+    assert "without an extension, uses the Target extension" in output
+
+
 def test_cli_accepts_long_audio_stream_options() -> None:
     config = parse_processing_config(
         [

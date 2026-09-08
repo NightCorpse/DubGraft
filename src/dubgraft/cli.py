@@ -199,10 +199,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("positional_source", nargs="?", metavar="SOURCE")
     parser.add_argument("positional_target", nargs="?", metavar="TARGET")
-    parser.add_argument("positional_output", nargs="?", metavar="OUTPUT")
+    parser.add_argument(
+        "positional_output",
+        nargs="?",
+        metavar="OUTPUT",
+        help="output path; without an extension, uses the Target extension",
+    )
     parser.add_argument("-s", "--source", dest="explicit_source", metavar="PATH")
     parser.add_argument("-t", "--target", dest="explicit_target", metavar="PATH")
-    parser.add_argument("-o", "--output", dest="explicit_output", metavar="PATH")
+    parser.add_argument(
+        "-o",
+        "--output",
+        dest="explicit_output",
+        metavar="PATH",
+        help="output path; without an extension, uses the Target extension",
+    )
     parser.add_argument(
         "-S",
         "--source-audio",

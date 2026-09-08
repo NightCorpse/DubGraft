@@ -7,7 +7,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 
 from dubgraft.config import MatchingConfig, ProcessingConfig, TimelineConfig
@@ -29,6 +29,7 @@ from dubgraft.media import (
 
 
 logger = logging.getLogger(__name__)
+RenderProgress = Callable[[str, float, float], None]
 
 
 class ProcessingError(RuntimeError):
@@ -54,7 +55,70 @@ def _output_path(config: ProcessingConfig) -> Path:
     return config.output
 
 
-def _run_ffmpeg(command: list[str], operation: str) -> None:
+def _progress_time(values: dict[str, str]) -> float | None:
+    for key in ("out_time_us", "out_time_ms"):
+        try:
+            seconds = int(values[key]) / 1_000_000
+        except (KeyError, ValueError):
+            continue
+        if math.isfinite(seconds):
+            return seconds
+
+    try:
+        hours, minutes, seconds_text = values["out_time"].split(":", 2)
+        seconds = int(hours) * 3600 + int(minutes) * 60 + float(seconds_text)
+    except (KeyError, ValueError):
+        return None
+    return seconds if math.isfinite(seconds) else None
+
+
+def _iter_progress_times(lines: Iterable[str]) -> Iterator[float]:
+    values: dict[str, str] = {}
+    for line in lines:
+        key, separator, value = line.strip().partition("=")
+        if not separator:
+            continue
+        values[key] = value
+        if key == "progress":
+            seconds = _progress_time(values)
+            if seconds is not None:
+                yield seconds
+            values.clear()
+
+
+def _stop_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        process.terminate()
+    except OSError:
+        pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait()
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+
+def _run_ffmpeg(
+    command: list[str],
+    operation: str,
+    *,
+    expected_duration: float | None = None,
+    progress: RenderProgress | None = None,
+) -> None:
+    if progress is not None and expected_duration is not None:
+        _run_ffmpeg_with_progress(command, operation, expected_duration, progress)
+        return
+
     logger.debug("Running command: %s", shlex.join(command))
     try:
         result = subprocess.run(
@@ -70,6 +134,57 @@ def _run_ffmpeg(command: list[str], operation: str) -> None:
     if result.returncode != 0:
         detail = result.stderr.strip() or f"ffmpeg exited with code {result.returncode}"
         raise FFmpegError(detail)
+
+
+def _run_ffmpeg_with_progress(
+    command: list[str],
+    operation: str,
+    expected_duration: float,
+    progress: RenderProgress,
+) -> None:
+    progress_command = [
+        command[0],
+        "-nostats",
+        "-progress",
+        "pipe:1",
+        *command[1:],
+    ]
+    logger.debug("Running command: %s", shlex.join(progress_command))
+    try:
+        with tempfile.TemporaryFile(
+            mode="w+", encoding="utf-8", errors="replace"
+        ) as diagnostics:
+            process = subprocess.Popen(
+                progress_command,
+                stdout=subprocess.PIPE,
+                stderr=diagnostics,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            assert process.stdout is not None
+            completed = 0.0
+            try:
+                for seconds in _iter_progress_times(process.stdout):
+                    current = min(max(seconds, completed, 0.0), expected_duration * 0.99)
+                    if current > completed:
+                        completed = current
+                        progress(operation, completed, expected_duration)
+                return_code = process.wait()
+            except BaseException:
+                _stop_process(process)
+                raise
+            finally:
+                process.stdout.close()
+
+            diagnostics.seek(0)
+            detail = diagnostics.read().strip()
+    except OSError as error:
+        raise FFmpegError(f"could not execute ffmpeg {operation}: {error}") from error
+
+    if return_code != 0:
+        raise FFmpegError(detail or f"ffmpeg exited with code {return_code}")
+    progress(operation, expected_duration, expected_duration)
 
 
 def _publish_output(temporary_output: Path, config: ProcessingConfig) -> None:
@@ -144,6 +259,8 @@ def mux_source_audio(
     source_audio: MediaStream,
     *,
     offset: float,
+    source_duration: float | None = None,
+    progress: RenderProgress | None = None,
 ) -> None:
     """Copy the Target and append one Source audio stream at a static offset."""
     ffmpeg = shutil.which("ffmpeg")
@@ -160,6 +277,16 @@ def mux_source_audio(
             source_stream_index = source_audio.index
             if offset > 0:
                 source_path = Path(temporary_directory) / "trimmed-source.mka"
+                trim_duration = next(
+                    (
+                        duration
+                        for duration in (source_audio.duration, source_duration)
+                        if duration is not None
+                        and math.isfinite(duration)
+                        and duration > offset
+                    ),
+                    None,
+                )
                 _run_ffmpeg(
                     [
                         ffmpeg,
@@ -183,6 +310,8 @@ def mux_source_audio(
                         str(source_path),
                     ],
                     "audio trim",
+                    expected_duration=trim_duration,
+                    progress=progress,
                 )
                 if not source_path.is_file():
                     raise FFmpegError("ffmpeg did not create the trimmed audio")
@@ -214,7 +343,12 @@ def mux_source_audio(
             )
             command.extend(_audio_metadata_arguments(target_info, source_audio))
             command.append(str(temporary_output))
-            _run_ffmpeg(command, "mux")
+            _run_ffmpeg(
+                command,
+                "mux",
+                expected_duration=target_duration,
+                progress=progress,
+            )
             if not temporary_output.is_file():
                 raise FFmpegError("ffmpeg did not create the output file")
             _publish_output(temporary_output, config)
@@ -227,6 +361,8 @@ def mux_drift_audio(
     target_info: MediaInfo,
     source_audio: MediaStream,
     analysis: TimelineAnalysis,
+    *,
+    progress: RenderProgress | None = None,
 ) -> None:
     """Continuously retime and append Source audio to the Target timeline."""
     target_duration = _target_duration(target_info)
@@ -318,7 +454,12 @@ def mux_drift_audio(
                 "matroska",
                 str(reconstructed_audio),
             ]
-            _run_ffmpeg(reconstruction_command, "drift reconstruction")
+            _run_ffmpeg(
+                reconstruction_command,
+                "audio reconstruction",
+                expected_duration=target_duration,
+                progress=progress,
+            )
             if not reconstructed_audio.is_file():
                 raise FFmpegError("ffmpeg did not create the reconstructed audio")
             _validate_reconstructed_audio(reconstructed_audio, source_audio)
@@ -353,7 +494,12 @@ def mux_drift_audio(
             ]
             command.extend(_audio_metadata_arguments(target_info, source_audio))
             command.append(str(temporary_output))
-            _run_ffmpeg(command, "mux")
+            _run_ffmpeg(
+                command,
+                "mux",
+                expected_duration=target_duration,
+                progress=progress,
+            )
             if not temporary_output.is_file():
                 raise FFmpegError("ffmpeg did not create the output file")
             _publish_output(temporary_output, config)
@@ -392,12 +538,21 @@ def render_media(
     target_info: MediaInfo,
     source_audio: MediaStream,
     result: MatchingResult,
+    *,
+    source_duration: float | None = None,
+    progress: RenderProgress | None = None,
 ) -> None:
     """Render a previously analyzed and conclusive matching result."""
     if result.timeline.kind is TimelineKind.INCONCLUSIVE:
         raise InconclusiveTimelineError(result.timeline, result)
     if result.timeline.kind is TimelineKind.DRIFT:
-        mux_drift_audio(config, target_info, source_audio, result.timeline)
+        mux_drift_audio(
+            config,
+            target_info,
+            source_audio,
+            result.timeline,
+            progress=progress,
+        )
         return
 
     offset = 0.0
@@ -405,7 +560,14 @@ def render_media(
         if result.timeline.median_offset is None:
             raise ProcessingError("static timeline has no offset")
         offset = result.timeline.median_offset
-    mux_source_audio(config, target_info, source_audio, offset=offset)
+    mux_source_audio(
+        config,
+        target_info,
+        source_audio,
+        offset=offset,
+        source_duration=source_duration,
+        progress=progress,
+    )
 
 
 def process_media(
@@ -428,5 +590,11 @@ def process_media(
         matching_config,
         timeline_config,
     )
-    render_media(config, target_info, source_audio, result)
+    render_media(
+        config,
+        target_info,
+        source_audio,
+        result,
+        source_duration=_source_audio_duration(source_info, source_audio),
+    )
     return result

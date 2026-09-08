@@ -1,3 +1,4 @@
+import io
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -10,6 +11,8 @@ from dubgraft.media import FFmpegError, MediaInfo, MediaStream
 from dubgraft.processing import (
     InconclusiveTimelineError,
     ProcessingError,
+    _iter_progress_times,
+    _run_ffmpeg,
     _validate_reconstructed_audio,
     mux_drift_audio,
     mux_source_audio,
@@ -51,6 +54,44 @@ def matching_result(
         20,
         timeline(kind, offset=offset, slope=slope, intercept=intercept),
     )
+
+
+class _FakeProcess:
+    def __init__(
+        self,
+        output: str,
+        diagnostics: io.TextIOBase,
+        *,
+        return_code: int = 0,
+        error: str = "",
+    ) -> None:
+        self.stdout = io.StringIO(output)
+        self.return_code = return_code
+        diagnostics.write(error)
+
+    def poll(self) -> int | None:
+        return self.return_code
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.return_code
+
+    def terminate(self) -> None:
+        pass
+
+    def kill(self) -> None:
+        pass
+
+
+class _RunningProcess(_FakeProcess):
+    def __init__(self, output: str, diagnostics: io.TextIOBase) -> None:
+        super().__init__(output, diagnostics)
+        self.terminated = False
+
+    def poll(self) -> int | None:
+        return 0 if self.terminated else None
+
+    def terminate(self) -> None:
+        self.terminated = True
 
 
 @pytest.fixture
@@ -135,6 +176,99 @@ def test_mux_source_audio_preserves_target_and_applies_static_offset(
     assert "language=por" in command
     assert "title=Brazilian Portuguese" in command
     assert config.output.is_file()
+
+
+@pytest.mark.parametrize(
+    ("timestamp", "expected"),
+    [
+        ("out_time_us=2500000", 2.5),
+        ("out_time_ms=2500000", 2.5),
+        ("out_time=00:00:02.500000", 2.5),
+    ],
+)
+def test_progress_time_formats(timestamp: str, expected: float) -> None:
+    lines = [f"{timestamp}\n", "progress=continue\n"]
+
+    assert list(_iter_progress_times(lines)) == [expected]
+
+
+def test_ffmpeg_progress_is_monotonic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+    updates: list[tuple[str, float, float]] = []
+    protocol = "".join(
+        [
+            "out_time_us=5000000\nprogress=continue\n",
+            "out_time_us=4000000\nprogress=continue\n",
+            "out_time_us=12000000\nprogress=end\n",
+        ]
+    )
+
+    def fake_popen(command: list[str], **kwargs: object) -> _FakeProcess:
+        commands.append(command)
+        return _FakeProcess(protocol, kwargs["stderr"])  # type: ignore[arg-type]
+
+    monkeypatch.setattr("dubgraft.processing.subprocess.Popen", fake_popen)
+
+    _run_ffmpeg(
+        ["ffmpeg", "-v", "error", "output.mkv"],
+        "mux",
+        expected_duration=10,
+        progress=lambda *values: updates.append(values),
+    )
+
+    assert commands[0][1:4] == ["-nostats", "-progress", "pipe:1"]
+    assert updates == [("mux", 5, 10), ("mux", 9.9, 10), ("mux", 10, 10)]
+
+
+def test_ffmpeg_progress_preserves_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "dubgraft.processing.subprocess.Popen",
+        lambda *args, **kwargs: _FakeProcess(
+            "progress=end\n",
+            kwargs["stderr"],
+            return_code=1,
+            error="mux failed",
+        ),
+    )
+
+    with pytest.raises(FFmpegError, match="mux failed"):
+        _run_ffmpeg(
+            ["ffmpeg", "output.mkv"],
+            "mux",
+            expected_duration=10,
+            progress=lambda *args: None,
+        )
+
+
+def test_ffmpeg_progress_stops_on_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    processes: list[_RunningProcess] = []
+
+    def fake_popen(*args: object, **kwargs: object) -> _RunningProcess:
+        process = _RunningProcess(
+            "out_time_us=1000000\nprogress=continue\n",
+            kwargs["stderr"],  # type: ignore[arg-type]
+        )
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr("dubgraft.processing.subprocess.Popen", fake_popen)
+
+    with pytest.raises(KeyboardInterrupt):
+        _run_ffmpeg(
+            ["ffmpeg", "output.mkv"],
+            "mux",
+            expected_duration=10,
+            progress=lambda *args: (_ for _ in ()).throw(KeyboardInterrupt),
+        )
+
+    assert processes[0].terminated
+    assert processes[0].stdout.closed
 
 
 def test_mux_source_audio_keeps_existing_output_when_ffmpeg_fails(
@@ -384,7 +518,7 @@ def test_process_media_muxes_direct_and_static_timelines(
     monkeypatch.setattr("dubgraft.processing.match_audio_streams", match)
     monkeypatch.setattr(
         "dubgraft.processing.mux_source_audio",
-        lambda *args, offset: offsets.append(offset),
+        lambda *args, offset, **kwargs: offsets.append(offset),
     )
 
     assert (
@@ -437,7 +571,7 @@ def test_process_media_reconstructs_drift(
     )
     monkeypatch.setattr(
         "dubgraft.processing.mux_drift_audio",
-        lambda *args: analyses.append(args[-1]),
+        lambda *args, **kwargs: analyses.append(args[-1]),
     )
 
     assert (

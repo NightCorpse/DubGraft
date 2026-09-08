@@ -255,6 +255,33 @@ def test_cli_verbose_prints_processing_details(
     assert "Analysis: direct | 4/4 anchors" in error
 
 
+def test_cli_formats_render_phases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    available_ffmpeg: None,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+    updates: list[str] = []
+    monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
+    monkeypatch.setattr(
+        "dubgraft.runtime.RunOutput.update",
+        lambda self, detail: updates.append(detail),
+    )
+
+    def render(*args: object, **kwargs: object) -> None:
+        progress = kwargs["progress"]
+        progress("audio reconstruction", 5, 10)  # type: ignore[operator]
+        progress("mux", 2.5, 10)  # type: ignore[operator]
+
+    monkeypatch.setattr("dubgraft.cli.render_media", render)
+
+    assert main([str(source), str(target), str(tmp_path / "output.mkv")]) == 0
+    assert updates[-2:] == ["audio reconstruction (50%)", "mux (25%)"]
+
+
 def test_cli_quiet_preserves_explicit_print_report(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

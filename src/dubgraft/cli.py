@@ -645,8 +645,17 @@ def _run_processing(
 
     if not config.analyze_only:
         try:
-            with output.stage("Rendering output"):
-                render_media(config, target_info, source_audio, result)
+            with output.stage("Rendering output") as stage:
+                render_media(
+                    config,
+                    target_info,
+                    source_audio,
+                    result,
+                    source_duration=source_info.duration,
+                    progress=lambda phase, completed, total: stage.update(
+                        f"{phase} ({completed / total:.0%})"
+                    ),
+                )
             output.detail(f"Output: {config.output}")
         except (FFmpegError, ProcessingError) as error:
             output.error(str(error))

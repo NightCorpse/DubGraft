@@ -83,6 +83,7 @@ def test_synthetic_direct_static_and_drift_outputs(
     source_audio = select_audio_stream(source_info)
     output = tmp_path / f"{kind.value}.mkv"
     config = ProcessingConfig(source, target, output)
+    progress: list[tuple[str, float, float]] = []
 
     if kind is TimelineKind.DRIFT:
         analysis = TimelineAnalysis(
@@ -96,14 +97,37 @@ def test_synthetic_direct_static_and_drift_outputs(
             0,
             -0.004,
         )
-        mux_drift_audio(config, target_info, source_audio, analysis)
+        mux_drift_audio(
+            config,
+            target_info,
+            source_audio,
+            analysis,
+            progress=lambda *values: progress.append(values),
+        )
     else:
         mux_source_audio(
             config,
             target_info,
             source_audio,
             offset=0 if kind is TimelineKind.DIRECT else 0.25,
+            source_duration=source_info.duration,
+            progress=lambda *values: progress.append(values),
         )
+
+    expected_phases = (
+        {"audio reconstruction", "mux"}
+        if kind is TimelineKind.DRIFT
+        else {"audio trim", "mux"}
+        if kind is TimelineKind.STATIC
+        else {"mux"}
+    )
+    assert {phase for phase, _, _ in progress} == expected_phases
+    for phase in expected_phases:
+        values = [(completed, total) for name, completed, total in progress if name == phase]
+        assert values[-1][0] == values[-1][1]
+        assert values == sorted(values)
+    if kind is TimelineKind.STATIC:
+        assert progress[0][2] == source_info.duration
 
     output_info = probe_media(output)
     assert output_info.duration == pytest.approx(target_info.duration, abs=0.05)

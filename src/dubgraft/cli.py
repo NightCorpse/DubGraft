@@ -9,6 +9,7 @@ from dubgraft import __version__
 from dubgraft.config import (
     ConfigurationError,
     ProcessingConfig,
+    validate_log_path,
     validate_processing_config,
 )
 from dubgraft.matching import MatchingResult, TimelineKind
@@ -34,6 +35,7 @@ from dubgraft.report import (
     format_human_report,
     write_json_report,
 )
+from dubgraft.runtime import RunOutput
 
 
 def _format_offset(value: float) -> str:
@@ -211,6 +213,25 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print candidates, anchors, and model diagnostics",
     )
+    output_group = parser.add_mutually_exclusive_group()
+    output_group.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="show detailed processing information",
+    )
+    output_group.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="suppress progress and the final summary",
+    )
+    parser.add_argument(
+        "--log",
+        type=Path,
+        metavar="PATH",
+        help="append detailed diagnostics to a log file",
+    )
     return parser
 
 
@@ -269,6 +290,9 @@ def parse_processing_config(
         analyze_only=arguments.analyze_only,
         report=arguments.report,
         print_report=arguments.print_report,
+        verbose=arguments.verbose,
+        quiet=arguments.quiet,
+        log=arguments.log,
     )
 
 
@@ -417,10 +441,13 @@ def _probe_processing_media(
     parser: argparse.ArgumentParser,
     role: str,
     path: Path,
+    output: RunOutput | None = None,
 ) -> MediaInfo:
     try:
         return probe_media(path)
     except MediaProbeError as error:
+        if output is not None:
+            output.error(f"could not inspect {role}: {error}")
         parser.exit(1, f"{parser.prog}: error: could not inspect {role}: {error}\n")
 
 
@@ -483,25 +510,33 @@ def _run_inspect(argv: Sequence[str]) -> int:
     return int(failed)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = build_parser()
-    arguments = list(argv) if argv is not None else sys.argv[1:]
-    if not arguments:
-        parser.print_help()
-        return 0
-    if arguments[0] == "inspect":
-        return _run_inspect(arguments[1:])
-    config = parse_processing_config(arguments, parser)
+def _run_processing(
+    parser: argparse.ArgumentParser,
+    config: ProcessingConfig,
+    output: RunOutput,
+) -> int:
     try:
-        config = validate_processing_config(config)
-    except ConfigurationError as error:
-        parser.error(str(error))
-    try:
-        validate_ffmpeg()
+        with output.stage("Checking FFmpeg"):
+            ffmpeg_info = validate_ffmpeg()
     except FFmpegError as error:
+        output.error(str(error))
         parser.exit(1, f"{parser.prog}: error: {error}\n")
-    source_info = _probe_processing_media(parser, "Source", config.source)
-    target_info = _probe_processing_media(parser, "Target", config.target)
+    if ffmpeg_info is not None:
+        output.detail(f"FFmpeg: {ffmpeg_info.version} ({ffmpeg_info.executable})")
+
+    with output.stage("Inspecting Source"):
+        source_info = _probe_processing_media(parser, "Source", config.source, output)
+    output.detail(
+        f"Source: {source_info.path} | duration {_format_duration(source_info.duration)} | "
+        f"{_plural(len(source_info.streams), 'stream')}"
+    )
+    with output.stage("Inspecting Target"):
+        target_info = _probe_processing_media(parser, "Target", config.target, output)
+    output.detail(
+        f"Target: {target_info.path} | duration {_format_duration(target_info.duration)} | "
+        f"{_plural(len(target_info.streams), 'stream')}"
+    )
+
     selections: list[MediaStream | None] = []
     selection_errors = []
     for role, info, index, option in (
@@ -526,29 +561,45 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _format_audio_selection_error(parser, role, option, error)
             )
     if selection_errors:
+        output.error("; ".join(error.splitlines()[0] for error in selection_errors))
         parser.exit(2, "\n\n".join(selection_errors) + "\n")
     source_audio, target_audio = selections
     assert source_audio is not None and target_audio is not None
+    output.detail(f"Source audio: {_format_audio(source_audio)}")
+    output.detail(f"Target audio: {_format_audio(target_audio)}")
+
     try:
-        result = analyze_media(
-            config, source_info, target_info, source_audio, target_audio
-        )
-        if result.timeline.kind is TimelineKind.INCONCLUSIVE:
-            raise InconclusiveTimelineError(result.timeline, result)
+        with output.stage("Analyzing alignment") as stage:
+            result = analyze_media(
+                config,
+                source_info,
+                target_info,
+                source_audio,
+                target_audio,
+                progress=lambda completed, total: stage.update(
+                    f"{completed}/{total} ({completed / total:.0%})"
+                ),
+            )
+            if result.timeline.kind is TimelineKind.INCONCLUSIVE:
+                raise InconclusiveTimelineError(result.timeline, result)
     except InconclusiveTimelineError as error:
+        output.error(str(error))
         if error.result is not None:
             try:
-                _write_requested_report(
-                    config,
-                    source_info,
-                    target_info,
-                    source_audio,
-                    target_audio,
-                    error.result,
-                    status="inconclusive",
-                    error=str(error),
-                )
+                if config.report is not None:
+                    with output.stage("Writing report"):
+                        _write_requested_report(
+                            config,
+                            source_info,
+                            target_info,
+                            source_audio,
+                            target_audio,
+                            error.result,
+                            status="inconclusive",
+                            error=str(error),
+                        )
             except ReportError as report_error:
+                output.error(str(report_error))
                 if config.print_report:
                     print(
                         format_human_report(
@@ -583,24 +634,37 @@ def main(argv: Sequence[str] | None = None) -> int:
         detail = format_inconclusive_error(error)
         parser.exit(1, f"{parser.prog}: error: {detail}\n")
     except (FFmpegError, ProcessingError) as error:
+        output.error(str(error))
         parser.exit(1, f"{parser.prog}: error: {error}\n")
+
+    output.detail(
+        f"Analysis: {result.timeline.kind.value} | "
+        f"{len(result.anchors)}/{result.requested_anchor_count} anchors | "
+        f"coverage {result.timeline.coverage:.1%}"
+    )
 
     if not config.analyze_only:
         try:
-            render_media(config, target_info, source_audio, result)
+            with output.stage("Rendering output"):
+                render_media(config, target_info, source_audio, result)
+            output.detail(f"Output: {config.output}")
         except (FFmpegError, ProcessingError) as error:
+            output.error(str(error))
             try:
-                _write_requested_report(
-                    config,
-                    source_info,
-                    target_info,
-                    source_audio,
-                    target_audio,
-                    result,
-                    status="processing_failed",
-                    error=str(error),
-                )
+                if config.report is not None:
+                    with output.stage("Writing report"):
+                        _write_requested_report(
+                            config,
+                            source_info,
+                            target_info,
+                            source_audio,
+                            target_audio,
+                            result,
+                            status="processing_failed",
+                            error=str(error),
+                        )
             except ReportError as report_error:
+                output.error(str(report_error))
                 if config.print_report:
                     print(
                         format_human_report(
@@ -636,22 +700,32 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     status = "analysis_only" if config.analyze_only else "completed"
     try:
-        _write_requested_report(
-            config,
-            source_info,
-            target_info,
-            source_audio,
-            target_audio,
-            result,
-            status=status,
-        )
+        if config.report is not None:
+            with output.stage("Writing report"):
+                _write_requested_report(
+                    config,
+                    source_info,
+                    target_info,
+                    source_audio,
+                    target_audio,
+                    result,
+                    status=status,
+                )
+            output.detail(f"Report: {config.report}")
     except ReportError as error:
-        if config.analyze_only:
-            print(format_analysis_summary(result))
-        else:
-            print(format_processing_summary(result, config, target_info, source_audio))
+        output.error(str(error))
+        if not config.quiet:
+            if config.analyze_only:
+                print(format_analysis_summary(result))
+            else:
+                print(
+                    format_processing_summary(
+                        result, config, target_info, source_audio
+                    )
+                )
         if config.print_report:
-            print()
+            if not config.quiet:
+                print()
             print(
                 format_human_report(
                     config,
@@ -671,12 +745,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"but {error}\n",
         )
 
-    if config.analyze_only:
-        print(format_analysis_summary(result))
-    else:
-        print(format_processing_summary(result, config, target_info, source_audio))
+    if not config.quiet:
+        if config.analyze_only:
+            print(format_analysis_summary(result))
+        else:
+            print(format_processing_summary(result, config, target_info, source_audio))
     if config.print_report:
-        print()
+        if not config.quiet:
+            print()
         print(
             format_human_report(
                 config,
@@ -689,6 +765,51 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         )
     return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = build_parser()
+    arguments = list(argv) if argv is not None else sys.argv[1:]
+    if not arguments:
+        parser.print_help()
+        return 0
+    if arguments[0] == "inspect":
+        return _run_inspect(arguments[1:])
+    config = parse_processing_config(arguments, parser)
+    try:
+        log_path = validate_log_path(config)
+    except ConfigurationError as error:
+        parser.error(str(error))
+
+    try:
+        output = RunOutput(
+            verbose=config.verbose,
+            quiet=config.quiet,
+            log_path=log_path,
+        )
+    except OSError as error:
+        parser.exit(1, f"{parser.prog}: error: could not open Log: {error}\n")
+    with output:
+        try:
+            try:
+                config = validate_processing_config(config)
+            except ConfigurationError as error:
+                output.error(str(error))
+                parser.error(str(error))
+            return _run_processing(parser, config, output)
+        except SystemExit:
+            raise
+        except KeyboardInterrupt:
+            output.warning("Run cancelled by user")
+            parser.exit(130, f"{parser.prog}: error: interrupted by user\n")
+        except Exception as error:
+            detail = f"{type(error).__name__}: {error}"
+            output.exception(f"Unexpected failure: {detail}")
+            log_hint = f"; details written to {config.log}" if config.log else ""
+            parser.exit(
+                1,
+                f"{parser.prog}: error: unexpected failure: {detail}{log_hint}\n",
+            )
 
 
 if __name__ == "__main__":

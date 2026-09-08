@@ -19,6 +19,9 @@ class ProcessingConfig:
     analyze_only: bool = False
     report: Path | None = None
     print_report: bool = False
+    verbose: bool = False
+    quiet: bool = False
+    log: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +49,27 @@ class TimelineConfig:
 
 class ConfigurationError(ValueError):
     """Raised when DubGraft configuration violates its safety contract."""
+
+
+def validate_log_path(config: ProcessingConfig) -> Path | None:
+    """Resolve a safe log path before validating the complete request."""
+    if config.log is None:
+        return None
+    log = config.log.expanduser().resolve()
+    reserved_paths = {
+        config.source.expanduser().resolve(),
+        config.target.expanduser().resolve(),
+    }
+    for path in (config.output, config.report):
+        if path is not None:
+            reserved_paths.add(path.expanduser().resolve())
+    if log in reserved_paths:
+        raise ConfigurationError("Log must not replace an input, Output, or Report file")
+    if log.is_dir():
+        raise ConfigurationError(f"Log is a directory: {log}")
+    if not log.parent.is_dir():
+        raise ConfigurationError(f"Log directory does not exist: {log.parent}")
+    return log
 
 
 def validate_matching_config(config: MatchingConfig) -> MatchingConfig:
@@ -109,6 +133,7 @@ def validate_processing_config(config: ProcessingConfig) -> ProcessingConfig:
     target = config.target.expanduser().resolve()
     output = config.output.expanduser().resolve() if config.output is not None else None
     report = config.report.expanduser().resolve() if config.report is not None else None
+    log = validate_log_path(config)
 
     for role, path in (("Source", source), ("Target", target)):
         if not path.exists():
@@ -156,4 +181,7 @@ def validate_processing_config(config: ProcessingConfig) -> ProcessingConfig:
         analyze_only=config.analyze_only,
         report=report,
         print_report=config.print_report,
+        verbose=config.verbose,
+        quiet=config.quiet,
+        log=log,
     )

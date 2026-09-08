@@ -110,3 +110,28 @@ def test_processing_config_requires_output_for_rendering(tmp_path: Path) -> None
 
     with pytest.raises(ConfigurationError, match="Output is required"):
         validate_processing_config(ProcessingConfig(source, target))
+
+
+def test_processing_config_resolves_log_path(tmp_path: Path) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+
+    validated = validate_processing_config(
+        ProcessingConfig(source, target, analyze_only=True, log=Path("run.log"))
+    )
+
+    assert validated.log == Path("run.log").resolve()
+
+
+def test_processing_config_rejects_log_collisions(tmp_path: Path) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+
+    with pytest.raises(ConfigurationError, match="Log must not replace"):
+        validate_processing_config(
+            ProcessingConfig(source, target, analyze_only=True, log=source)
+        )

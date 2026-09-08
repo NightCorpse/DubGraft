@@ -1,6 +1,7 @@
 """Audio correlation, scanning, and distributed anchor selection."""
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -98,6 +99,8 @@ def scan_audio_matches(
     target_stream_index: int,
     target_duration: float,
     config: MatchingConfig = MatchingConfig(),
+    *,
+    progress: Callable[[int, int], None] | None = None,
 ) -> tuple[AudioMatch, ...]:
     """Scan the Target timeline for confident matches in the Source audio."""
     validate_matching_config(config)
@@ -105,9 +108,13 @@ def scan_audio_matches(
         raise ValueError("target duration must be a positive finite number")
 
     candidates = []
+    scan_times = []
     target_time = config.scan_step_seconds
     scan_end = target_duration - config.scan_step_seconds
     while target_time < scan_end:
+        scan_times.append(target_time)
+        target_time += config.scan_step_seconds
+    for completed, target_time in enumerate(scan_times, start=1):
         fingerprint = extract_audio_window(
             target,
             target_stream_index,
@@ -129,7 +136,8 @@ def scan_audio_matches(
         )
         if match is not None and match.confidence >= config.confidence_threshold:
             candidates.append(match)
-        target_time += config.scan_step_seconds
+        if progress is not None:
+            progress(completed, len(scan_times))
     return tuple(candidates)
 
 
@@ -335,6 +343,7 @@ def match_audio_streams(
     timeline_config: TimelineConfig = TimelineConfig(),
     *,
     source_duration: float | None = None,
+    progress: Callable[[int, int], None] | None = None,
 ) -> MatchingResult:
     """Run scanning and distributed anchor selection for two audio streams."""
     validate_timeline_config(timeline_config)
@@ -345,6 +354,7 @@ def match_audio_streams(
         target_stream_index,
         target_duration,
         config,
+        progress=progress,
     )
     anchor_count = max(
         calculate_anchor_count(target_duration), timeline_config.minimum_anchor_count

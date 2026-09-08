@@ -194,6 +194,239 @@ def test_cli_accepts_valid_media_paths(
     assert main([str(source), str(target), str(output)]) == 0
 
 
+def test_cli_prints_default_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    available_ffmpeg: None,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+    monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
+
+    assert main([str(source), str(target), str(tmp_path / "output.mkv")]) == 0
+
+    error = capsys.readouterr().err
+    assert "Checking FFmpeg... done" in error
+    assert "Inspecting Source... done" in error
+    assert "Inspecting Target... done" in error
+    assert "Analyzing alignment... done" in error
+    assert "Rendering output... done" in error
+
+
+def test_cli_quiet_suppresses_progress_and_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    available_ffmpeg: None,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+    monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
+
+    assert main([str(source), str(target), "--analyze-only", "--quiet"]) == 0
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_cli_verbose_prints_processing_details(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    available_ffmpeg: None,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+    monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
+
+    assert main([str(source), str(target), "--analyze-only", "--verbose"]) == 0
+
+    error = capsys.readouterr().err
+    assert f"Source: {source.resolve()}" in error
+    assert "Source audio: [1] eac3" in error
+    assert "Analysis: direct | 4/4 anchors" in error
+
+
+def test_cli_quiet_preserves_explicit_print_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    available_ffmpeg: None,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+    monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
+
+    assert (
+        main(
+            [
+                str(source),
+                str(target),
+                "--analyze-only",
+                "--quiet",
+                "--print-report",
+            ]
+        )
+        == 0
+    )
+
+    captured = capsys.readouterr()
+    assert captured.out.startswith("DubGraft Analysis Report")
+    assert captured.err == ""
+
+
+def test_cli_appends_detailed_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    available_ffmpeg: None,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    log = tmp_path / "dubgraft.log"
+    source.touch()
+    target.touch()
+    monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
+
+    arguments = [
+        str(source),
+        str(target),
+        "--analyze-only",
+        "--quiet",
+        "--log",
+        str(log),
+    ]
+    assert main(arguments) == 0
+    assert main(arguments) == 0
+
+    contents = log.read_text(encoding="utf-8")
+    assert contents.count("DubGraft run started") == 2
+    assert "Analyzing alignment started" in contents
+    assert f"Source: {source.resolve()}" in contents
+
+
+def test_log_captures_unexpected_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    available_ffmpeg: None,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    log = tmp_path / "failure.log"
+    source.touch()
+    target.touch()
+    monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
+
+    def fail_analysis(*args: object, **kwargs: object) -> MatchingResult:
+        raise RuntimeError("unexpected test failure")
+
+    monkeypatch.setattr("dubgraft.cli.analyze_media", fail_analysis)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                str(source),
+                str(target),
+                "--analyze-only",
+                "--log",
+                str(log),
+            ]
+        )
+
+    assert exit_info.value.code == 1
+    error = capsys.readouterr().err
+    assert "unexpected failure: RuntimeError: unexpected test failure" in error
+    assert f"details written to {log.resolve()}" in error
+    contents = log.read_text(encoding="utf-8")
+    assert "ERROR dubgraft: Unexpected failure" in contents
+    assert "Traceback (most recent call last)" in contents
+    assert "RuntimeError: unexpected test failure" in contents
+
+
+def test_log_captures_configuration_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = tmp_path / "missing.mkv"
+    target = tmp_path / "target.mkv"
+    log = tmp_path / "configuration.log"
+    target.touch()
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                str(source),
+                str(target),
+                str(tmp_path / "output.mkv"),
+                "--log",
+                str(log),
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "Source file does not exist" in capsys.readouterr().err
+    contents = log.read_text(encoding="utf-8")
+    assert "ERROR dubgraft: Source file does not exist" in contents
+
+
+def test_interrupt_returns_130(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    available_ffmpeg: None,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    log = tmp_path / "interrupted.log"
+    source.touch()
+    target.touch()
+    monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
+
+    def interrupt(*args: object, **kwargs: object) -> MatchingResult:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("dubgraft.cli.analyze_media", interrupt)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                str(source),
+                str(target),
+                "--analyze-only",
+                "--log",
+                str(log),
+            ]
+        )
+
+    assert exit_info.value.code == 130
+    assert "interrupted by user" in capsys.readouterr().err
+    contents = log.read_text(encoding="utf-8")
+    assert "Analyzing alignment failed" in contents
+    assert "WARNING dubgraft: Run cancelled by user" in contents
+
+
+def test_cli_rejects_verbose_and_quiet_together(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        parse_processing_config(
+            ["source.mkv", "target.mkv", "--analyze-only", "--verbose", "--quiet"]
+        )
+
+    assert exit_info.value.code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
+
+
 def test_cli_rejects_missing_input(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -706,7 +939,8 @@ def test_cli_reports_unavailable_ffmpeg(
         main([str(source), str(target), str(tmp_path / "output.mkv")])
 
     assert exit_info.value.code == 1
-    assert "ffmpeg was not found in PATH" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert error.count("ffmpeg was not found in PATH") == 1
 
 
 @pytest.mark.parametrize("input_name", ["source", "target"])

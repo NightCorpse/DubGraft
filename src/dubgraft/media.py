@@ -1,7 +1,9 @@
 """Media metadata probing through FFprobe."""
 
 import json
+import logging
 import math
+import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -13,6 +15,9 @@ import numpy as np
 from numpy.typing import NDArray
 
 from dubgraft.config import ANALYSIS_SAMPLE_RATE
+
+
+logger = logging.getLogger(__name__)
 
 
 class MediaProbeError(RuntimeError):
@@ -88,6 +93,7 @@ def validate_ffmpeg() -> FFmpegInfo:
     ffmpeg = _ffmpeg_executable()
 
     command = [ffmpeg, "-version"]
+    logger.debug("Running command: %s", shlex.join(command))
     try:
         result = subprocess.run(
             command,
@@ -145,6 +151,7 @@ def extract_audio_window(
         str(ANALYSIS_SAMPLE_RATE),
         "pipe:1",
     ]
+    logger.debug("Running command: %s", shlex.join(command))
     try:
         result = subprocess.run(
             command,
@@ -294,6 +301,7 @@ def probe_media(path: Path) -> MediaInfo:
         "json",
         str(media_path),
     ]
+    logger.debug("Running command: %s", shlex.join(command))
     try:
         result = subprocess.run(
             command,

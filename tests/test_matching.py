@@ -80,15 +80,23 @@ def test_scan_audio_matches_filters_candidates_by_confidence(
         search_radius_seconds=5,
         confidence_threshold=8,
     )
+    progress: list[tuple[int, int]] = []
 
     matches = scan_audio_matches(
-        Path("source.mkv"), 1, Path("target.mkv"), 2, 70, config
+        Path("source.mkv"),
+        1,
+        Path("target.mkv"),
+        2,
+        70,
+        config,
+        progress=lambda completed, total: progress.append((completed, total)),
     )
 
     assert len(matches) == 2
     assert [match.target_time for match in matches] == [20, 40]
     assert calls[0] == (Path("target.mkv"), 2, 20, 6)
     assert calls[1] == (Path("source.mkv"), 1, 15, 16)
+    assert progress == [(1, 2), (2, 2)]
 
 
 def test_scan_audio_matches_skips_an_unavailable_window(

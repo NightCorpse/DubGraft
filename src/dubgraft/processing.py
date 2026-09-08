@@ -1,10 +1,13 @@
 """Processing orchestration and output muxing."""
 
+import logging
 import math
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 from dubgraft.config import MatchingConfig, ProcessingConfig, TimelineConfig
@@ -23,6 +26,9 @@ from dubgraft.media import (
     probe_media,
     select_audio_stream,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class ProcessingError(RuntimeError):
@@ -49,6 +55,7 @@ def _output_path(config: ProcessingConfig) -> Path:
 
 
 def _run_ffmpeg(command: list[str], operation: str) -> None:
+    logger.debug("Running command: %s", shlex.join(command))
     try:
         result = subprocess.run(
             command,
@@ -362,6 +369,8 @@ def analyze_media(
     target_audio: MediaStream,
     matching_config: MatchingConfig = MatchingConfig(),
     timeline_config: TimelineConfig = TimelineConfig(),
+    *,
+    progress: Callable[[int, int], None] | None = None,
 ) -> MatchingResult:
     """Analyze the temporal relationship between selected audio streams."""
     target_duration = _target_duration(target_info)
@@ -374,6 +383,7 @@ def analyze_media(
         matching_config,
         timeline_config,
         source_duration=_source_audio_duration(source_info, source_audio),
+        progress=progress,
     )
 
 

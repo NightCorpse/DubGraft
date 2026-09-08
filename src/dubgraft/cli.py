@@ -584,6 +584,29 @@ def _format_audio_selection_error(
     return "\n".join(lines)
 
 
+def _warn_missing_source_metadata(
+    parser: argparse.ArgumentParser,
+    config: ProcessingConfig,
+    source_audio: MediaStream,
+    output: RunOutput,
+) -> None:
+    suggestions = []
+    if config.language is None and not source_audio.language:
+        suggestions.append(
+            "selected Source audio has no language metadata; "
+            "use --language CODE to set it"
+        )
+    if config.track_name is None and not source_audio.title:
+        suggestions.append(
+            "selected Source audio has no title metadata; "
+            "use --track-name NAME to set it"
+        )
+    for suggestion in suggestions:
+        output.warning(suggestion)
+        if not output.quiet:
+            print(f"{parser.prog}: warning: {suggestion}", file=output.stream)
+
+
 def _write_requested_report(
     config: ProcessingConfig,
     source_info: MediaInfo,
@@ -688,6 +711,8 @@ def _run_processing(
     assert source_audio is not None and target_audio is not None
     output.detail(f"Source audio: {_format_audio(source_audio)}")
     output.detail(f"Target audio: {_format_audio(target_audio)}")
+    if not config.analyze_only:
+        _warn_missing_source_metadata(parser, config, source_audio, output)
 
     try:
         with output.stage("Analyzing alignment") as stage:

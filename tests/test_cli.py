@@ -1242,6 +1242,55 @@ def test_cli_suggests_target_option_when_only_target_is_ambiguous(
     assert "Use -T INDEX or --target-audio INDEX" in error
 
 
+def test_cli_suggests_missing_source_metadata_options(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    available_ffmpeg: None,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+    monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
+
+    assert main([str(source), str(target), str(tmp_path / "output.mkv")]) == 0
+
+    error = capsys.readouterr().err
+    assert "use --language CODE to set it" in error
+    assert "use --track-name NAME to set it" in error
+
+
+def test_cli_does_not_suggest_overridden_source_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    available_ffmpeg: None,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+    monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
+
+    assert (
+        main(
+            [
+                str(source),
+                str(target),
+                str(tmp_path / "output.mkv"),
+                "--language",
+                "pt",
+                "--track-name",
+                "Dublado",
+            ]
+        )
+        == 0
+    )
+
+    assert "warning:" not in capsys.readouterr().err
+
+
 def test_cli_reports_unavailable_ffmpeg(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

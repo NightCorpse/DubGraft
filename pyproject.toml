@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dubgraft"
-version = "0.1.0.dev0"
+dynamic = ["version"]
 description = "Align and graft dubbed audio across media releases using distributed audio anchors."
 requires-python = ">=3.11"
 license = "GPL-3.0-only"
@@ -36,6 +36,9 @@ dubgraft = "dubgraft.cli:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
+
+[tool.setuptools.dynamic]
+version = { attr = "dubgraft.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

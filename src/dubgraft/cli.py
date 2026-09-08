@@ -48,6 +48,7 @@ def format_processing_summary(
     config: ProcessingConfig,
     target_info: MediaInfo,
     source_audio: MediaStream,
+    output_info: MediaInfo | None = None,
 ) -> str:
     """Format the processing decisions and completed output for the user."""
     timeline = result.timeline
@@ -100,6 +101,9 @@ def format_processing_summary(
             audio += f", {layout}"
         lines.append(audio + ", re-encoded once")
 
+    if output_info is not None:
+        lines.append(f"Added audio: {_format_audio(output_info.streams[-1])}")
+        lines.append("Output validation: passed")
     lines.extend(
         [
             f"Target streams: {len(target_info.streams)} preserved",
@@ -496,6 +500,7 @@ def _write_requested_report(
     *,
     status: str,
     error: str | None = None,
+    output_info: MediaInfo | None = None,
 ) -> None:
     if config.report is None:
         return
@@ -508,6 +513,7 @@ def _write_requested_report(
         result,
         status=status,
         error=error,
+        output_info=output_info,
     )
     write_json_report(config.report, report, overwrite=config.overwrite)
 
@@ -667,7 +673,7 @@ def _run_processing(
     if not config.analyze_only:
         try:
             with output.stage("Rendering output") as stage:
-                render_media(
+                output_info = render_media(
                     config,
                     target_info,
                     source_audio,
@@ -740,6 +746,7 @@ def _run_processing(
                     target_audio,
                     result,
                     status=status,
+                    output_info=output_info if not config.analyze_only else None,
                 )
             output.detail(f"Report: {config.report}")
     except ReportError as error:
@@ -750,7 +757,7 @@ def _run_processing(
             else:
                 print(
                     format_processing_summary(
-                        result, config, target_info, source_audio
+                        result, config, target_info, source_audio, output_info
                     )
                 )
         if config.print_report:
@@ -765,6 +772,7 @@ def _run_processing(
                     target_audio,
                     result,
                     status=status,
+                    output_info=output_info if not config.analyze_only else None,
                 )
             )
         if config.analyze_only:
@@ -779,7 +787,11 @@ def _run_processing(
         if config.analyze_only:
             print(format_analysis_summary(result))
         else:
-            print(format_processing_summary(result, config, target_info, source_audio))
+            print(
+                format_processing_summary(
+                    result, config, target_info, source_audio, output_info
+                )
+            )
     if config.print_report:
         if not config.quiet:
             print()
@@ -792,6 +804,7 @@ def _run_processing(
                 target_audio,
                 result,
                 status=status,
+                output_info=output_info if not config.analyze_only else None,
             )
         )
     return 0

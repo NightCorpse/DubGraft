@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -15,10 +16,31 @@ from dubgraft.report import ReportError
 @pytest.fixture
 def available_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("dubgraft.cli.validate_ffmpeg", lambda: None)
-    monkeypatch.setattr(
-        "dubgraft.cli.render_media",
-        lambda *args, **kwargs: None,
-    )
+
+    def render(
+        config: ProcessingConfig,
+        target_info: MediaInfo,
+        source_audio: MediaStream,
+        *args: object,
+        **kwargs: object,
+    ) -> MediaInfo:
+        assert config.output is not None
+        added_audio = replace(
+            source_audio,
+            index=len(target_info.streams),
+            language=config.language or source_audio.language,
+            title=config.track_name or source_audio.title,
+        )
+        return MediaInfo(
+            config.output,
+            target_info.container,
+            target_info.duration,
+            None,
+            None,
+            (*target_info.streams, added_audio),
+        )
+
+    monkeypatch.setattr("dubgraft.cli.render_media", render)
     monkeypatch.setattr(
         "dubgraft.cli.analyze_media",
         lambda *args, **kwargs: processing_result(TimelineKind.DIRECT),
@@ -667,6 +689,8 @@ def test_cli_writes_detailed_json_report(
     assert data["timeline"]["classification"] == "direct"
     assert data["formulas"]["timeline"].startswith("source_time =")
     assert data["processing"]["rendered"] is False
+    assert data["processing"]["output_validated"] is False
+    assert data["processing"]["added_audio"] is None
 
 
 def test_cli_prints_full_report_after_summary(
@@ -682,7 +706,18 @@ def test_cli_prints_full_report_after_summary(
     monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
 
     assert (
-        main([str(source), str(target), str(tmp_path / "output.mkv"), "--print-report"])
+        main(
+            [
+                str(source),
+                str(target),
+                str(tmp_path / "output.mkv"),
+                "--print-report",
+                "--language",
+                "pt",
+                "--track-name",
+                "Dublado",
+            ]
+        )
         == 0
     )
 
@@ -693,6 +728,9 @@ def test_cli_prints_full_report_after_summary(
     assert "Candidates (4)" in output
     assert "Selected anchors (4)" in output
     assert "Target (s)" in output
+    assert "Output validated: yes" in output
+    assert "Requested metadata overrides: language=por | title=Dublado" in output
+    assert "Added audio: stream 1 | eac3 | por | Dublado" in output
 
 
 def test_cli_writes_completed_processing_report(
@@ -708,13 +746,35 @@ def test_cli_writes_completed_processing_report(
     target.touch()
     monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
 
-    assert main([str(source), str(target), str(output), "--report", str(report)]) == 0
+    assert (
+        main(
+            [
+                str(source),
+                str(target),
+                str(output),
+                "--report",
+                str(report),
+                "--language",
+                "pt",
+                "--track-name",
+                "Português Brasileiro",
+            ]
+        )
+        == 0
+    )
 
     data = json.loads(report.read_text(encoding="utf-8"))
     assert data["status"] == "completed"
     assert data["mode"] == "process"
     assert data["media"]["output"] == str(output.resolve())
     assert data["processing"]["rendered"] is True
+    assert data["processing"]["output_validated"] is True
+    assert data["processing"]["requested_metadata_overrides"] == {
+        "language": "por",
+        "title": "Português Brasileiro",
+    }
+    assert data["processing"]["added_audio"]["language"] == "por"
+    assert data["processing"]["added_audio"]["title"] == "Português Brasileiro"
 
 
 def test_cli_preserves_analysis_report_when_rendering_fails(
@@ -751,6 +811,8 @@ def test_cli_preserves_analysis_report_when_rendering_fails(
     data = json.loads(report.read_text(encoding="utf-8"))
     assert data["status"] == "processing_failed"
     assert data["error"] == "Atmos cannot be preserved"
+    assert data["processing"]["output_validated"] is False
+    assert data["processing"]["added_audio"] is None
     captured = capsys.readouterr()
     assert "Status: processing_failed" in captured.out
     assert "Atmos cannot be preserved" in captured.err
@@ -896,11 +958,27 @@ def test_processing_summary_reports_decisions(
         target_info.path,
         tmp_path / "output.mkv",
     )
+    output_info = MediaInfo(
+        config.output,
+        target_info.container,
+        target_info.duration,
+        None,
+        None,
+        (
+            *target_info.streams,
+            replace(source_audio, index=1, language="por", title="Dublado"),
+        ),
+    )
 
-    summary = format_processing_summary(result, config, target_info, source_audio)
+    summary = format_processing_summary(
+        result, config, target_info, source_audio, output_info
+    )
 
     assert "Anchors: 4/4 | coverage: 80.0%" in summary
     assert "Target streams: 1 preserved" in summary
+    assert "Added audio: [1] eac3" in summary
+    assert "| por | Dublado" in summary
+    assert "Output validation: passed" in summary
     assert f"Created: {config.output}" in summary
     for line in expected:
         assert line in summary

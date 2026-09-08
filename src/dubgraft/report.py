@@ -22,6 +22,16 @@ class ReportError(RuntimeError):
     """Raised when a requested report cannot be published safely."""
 
 
+def _added_audio(output_info: MediaInfo | None) -> MediaStream | None:
+    if (
+        output_info is None
+        or not output_info.streams
+        or output_info.streams[-1].kind != "audio"
+    ):
+        return None
+    return output_info.streams[-1]
+
+
 def _match_data(match: AudioMatch) -> dict[str, float]:
     return {
         "target_time_seconds": match.target_time,
@@ -41,6 +51,7 @@ def build_report(
     *,
     status: str,
     error: str | None = None,
+    output_info: MediaInfo | None = None,
     matching_config: MatchingConfig = MatchingConfig(),
     timeline_config: TimelineConfig = TimelineConfig(),
 ) -> dict[str, Any]:
@@ -52,6 +63,7 @@ def build_report(
     elif timeline.kind is TimelineKind.DRIFT:
         strategy = "eac3_640k"
 
+    added_audio = _added_audio(output_info)
     return {
         "schema_version": 1,
         "dubgraft_version": __version__,
@@ -110,11 +122,17 @@ def build_report(
         "processing": {
             "strategy": strategy,
             "rendered": status == "completed",
+            "output_validated": added_audio is not None,
             "target_streams_preserved": len(target_info.streams),
             "source_audio_codec": source_audio.codec,
             "source_audio_channels": source_audio.channels,
             "source_audio_channel_layout": source_audio.channel_layout,
             "source_audio_sample_rate_hz": source_audio.sample_rate,
+            "requested_metadata_overrides": {
+                "language": config.language,
+                "title": config.track_name,
+            },
+            "added_audio": asdict(added_audio) if added_audio is not None else None,
         },
     }
 
@@ -157,11 +175,13 @@ def format_human_report(
     *,
     status: str,
     error: str | None = None,
+    output_info: MediaInfo | None = None,
     matching_config: MatchingConfig = MatchingConfig(),
     timeline_config: TimelineConfig = TimelineConfig(),
 ) -> str:
     """Format candidates, anchors, model quality, and processing decisions."""
     timeline = result.timeline
+    added_audio = _added_audio(output_info)
     output = str(config.output) if config.output is not None else "not requested"
     lines = [
         "DubGraft Analysis Report",
@@ -231,9 +251,19 @@ def format_human_report(
             "Processing",
             f"  Strategy: {strategy}",
             f"  Rendered: {'yes' if status == 'completed' else 'no'}",
+            f"  Output validated: {'yes' if added_audio is not None else 'no'}",
             f"  Target streams preserved: {len(target_info.streams)}",
         ]
     )
+    overrides = []
+    if config.language is not None:
+        overrides.append(f"language={config.language}")
+    if config.track_name is not None:
+        overrides.append(f"title={config.track_name}")
+    if overrides:
+        lines.append(f"  Requested metadata overrides: {' | '.join(overrides)}")
+    if added_audio is not None:
+        lines.append(f"  Added audio: {_audio_format(added_audio)}")
 
     lines.extend(("", f"Candidates ({len(result.candidates)})"))
     lines.extend(_format_matches(result.candidates))

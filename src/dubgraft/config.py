@@ -4,6 +4,8 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
+from dubgraft.languages import LanguageCodeError, normalize_language_code
+
 
 ANALYSIS_SAMPLE_RATE = 22_050
 
@@ -22,6 +24,8 @@ class ProcessingConfig:
     verbose: bool = False
     quiet: bool = False
     log: Path | None = None
+    track_name: str | None = None
+    language: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +53,16 @@ class TimelineConfig:
 
 class ConfigurationError(ValueError):
     """Raised when DubGraft configuration violates its safety contract."""
+
+
+def normalize_track_name(value: str) -> str:
+    """Normalize and validate an explicit audio track name."""
+    track_name = value.strip()
+    if not track_name:
+        raise ConfigurationError("track name must not be empty")
+    if "\x00" in track_name:
+        raise ConfigurationError("track name must not contain a null character")
+    return track_name
 
 
 def validate_log_path(config: ProcessingConfig) -> Path | None:
@@ -134,6 +148,19 @@ def validate_processing_config(config: ProcessingConfig) -> ProcessingConfig:
     output = config.output.expanduser().resolve() if config.output is not None else None
     report = config.report.expanduser().resolve() if config.report is not None else None
     log = validate_log_path(config)
+    language = config.language
+    if language is not None:
+        try:
+            language = normalize_language_code(language)
+        except LanguageCodeError as error:
+            raise ConfigurationError(str(error)) from error
+    track_name = config.track_name
+    if track_name is not None:
+        track_name = normalize_track_name(track_name)
+    if config.analyze_only and (language is not None or track_name is not None):
+        raise ConfigurationError(
+            "--language and --track-name cannot be used with --analyze-only"
+        )
 
     for role, path in (("Source", source), ("Target", target)):
         if not path.exists():
@@ -184,4 +211,6 @@ def validate_processing_config(config: ProcessingConfig) -> ProcessingConfig:
         verbose=config.verbose,
         quiet=config.quiet,
         log=log,
+        track_name=track_name,
+        language=language,
     )

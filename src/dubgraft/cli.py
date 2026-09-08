@@ -13,6 +13,7 @@ from dubgraft.config import (
     validate_processing_config,
 )
 from dubgraft.matching import MatchingResult, TimelineKind
+from dubgraft.languages import LanguageCodeError, normalize_language_code
 from dubgraft.media import (
     AudioSelectionError,
     FFmpegError,
@@ -159,6 +160,13 @@ def _stream_index(value: str) -> int:
     return index
 
 
+def _language_code(value: str) -> str:
+    try:
+        return normalize_language_code(value)
+    except LanguageCodeError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dubgraft",
@@ -190,6 +198,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=_stream_index,
         metavar="INDEX",
         help="global stream index of the Target reference audio",
+    )
+    parser.add_argument(
+        "--track-name",
+        metavar="NAME",
+        help="override the added audio track name",
+    )
+    parser.add_argument(
+        "--language",
+        type=_language_code,
+        metavar="CODE",
+        help="override the added audio language with an ISO 639-1 or ISO 639-2 code",
     )
     parser.add_argument(
         "-y",
@@ -293,6 +312,8 @@ def parse_processing_config(
         verbose=arguments.verbose,
         quiet=arguments.quiet,
         log=arguments.log,
+        track_name=arguments.track_name,
+        language=arguments.language,
     )
 
 

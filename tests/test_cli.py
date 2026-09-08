@@ -113,6 +113,43 @@ def test_cli_accepts_long_audio_stream_options() -> None:
     assert config.target_audio_index == 4
 
 
+def test_cli_accepts_audio_metadata() -> None:
+    config = parse_processing_config(
+        [
+            "source.mkv",
+            "target.mkv",
+            "output.mkv",
+            "--language",
+            "pt",
+            "--track-name",
+            "Português Brasileiro",
+        ]
+    )
+
+    assert config.language == "por"
+    assert config.track_name == "Português Brasileiro"
+
+
+def test_cli_rejects_unknown_language(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        parse_processing_config(
+            [
+                "source.mkv",
+                "target.mkv",
+                "output.mkv",
+                "--language",
+                "egn",
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    error = capsys.readouterr().err
+    assert "did you mean 'eng'?" in error
+    assert "src/dubgraft/data/iso-639-2.csv" in error
+
+
 def test_cli_accepts_analyze_only_without_output() -> None:
     config = parse_processing_config(
         ["source.mkv", "target.mkv", "--analyze-only", "-S", "1", "-T", "4"]

@@ -82,7 +82,13 @@ def test_synthetic_direct_static_and_drift_outputs(
     target_info = probe_media(target)
     source_audio = select_audio_stream(source_info)
     output = tmp_path / f"{kind.value}.mkv"
-    config = ProcessingConfig(source, target, output)
+    config = ProcessingConfig(
+        source,
+        target,
+        output,
+        language="eng",
+        track_name="Dubbed",
+    )
     progress: list[tuple[str, float, float]] = []
 
     if kind is TimelineKind.DRIFT:
@@ -136,8 +142,8 @@ def test_synthetic_direct_static_and_drift_outputs(
     assert output_info.streams[1].codec == "pcm_s16le"
     assert output_info.streams[2].codec == "eac3"
     assert output_info.streams[2].channels == source_audio.channels == 6
-    assert output_info.streams[2].language == "por"
-    assert output_info.streams[2].title == "Dublado"
+    assert output_info.streams[2].language == "eng"
+    assert output_info.streams[2].title == "Dubbed"
     if kind is TimelineKind.DRIFT:
         assert output_info.streams[2].bit_rate == pytest.approx(640_000, rel=0.02)
 

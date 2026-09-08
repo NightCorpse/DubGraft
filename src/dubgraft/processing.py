@@ -10,7 +10,14 @@ import tempfile
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 
-from dubgraft.config import MatchingConfig, ProcessingConfig, TimelineConfig
+from dubgraft.config import (
+    ConfigurationError,
+    MatchingConfig,
+    ProcessingConfig,
+    TimelineConfig,
+    normalize_track_name,
+)
+from dubgraft.languages import LanguageCodeError, normalize_language_code
 from dubgraft.matching import (
     MatchingResult,
     TimelineAnalysis,
@@ -217,17 +224,33 @@ def _source_audio_duration(
 
 
 def _audio_metadata_arguments(
-    target_info: MediaInfo, source_audio: MediaStream
+    config: ProcessingConfig,
+    target_info: MediaInfo,
+    source_audio: MediaStream,
 ) -> list[str]:
     audio_index = sum(stream.kind == "audio" for stream in target_info.streams)
     arguments = []
-    if source_audio.language:
+    if config.language is None:
+        language = source_audio.language
+    else:
+        try:
+            language = normalize_language_code(config.language)
+        except LanguageCodeError as error:
+            raise ProcessingError(str(error)) from error
+    if config.track_name is None:
+        title = source_audio.title
+    else:
+        try:
+            title = normalize_track_name(config.track_name)
+        except ConfigurationError as error:
+            raise ProcessingError(str(error)) from error
+    if language:
         arguments.extend(
-            [f"-metadata:s:a:{audio_index}", f"language={source_audio.language}"]
+            [f"-metadata:s:a:{audio_index}", f"language={language}"]
         )
-    if source_audio.title:
+    if title:
         arguments.extend(
-            [f"-metadata:s:a:{audio_index}", f"title={source_audio.title}"]
+            [f"-metadata:s:a:{audio_index}", f"title={title}"]
         )
     return arguments
 
@@ -341,7 +364,7 @@ def mux_source_audio(
                     "disabled",
                 ]
             )
-            command.extend(_audio_metadata_arguments(target_info, source_audio))
+            command.extend(_audio_metadata_arguments(config, target_info, source_audio))
             command.append(str(temporary_output))
             _run_ffmpeg(
                 command,
@@ -492,7 +515,7 @@ def mux_drift_audio(
                 "-avoid_negative_ts",
                 "disabled",
             ]
-            command.extend(_audio_metadata_arguments(target_info, source_audio))
+            command.extend(_audio_metadata_arguments(config, target_info, source_audio))
             command.append(str(temporary_output))
             _run_ffmpeg(
                 command,

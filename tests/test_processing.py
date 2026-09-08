@@ -178,6 +178,58 @@ def test_mux_source_audio_preserves_target_and_applies_static_offset(
     assert config.output.is_file()
 
 
+def test_mux_source_audio_overrides_metadata(
+    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+    config = replace(config, language="de", track_name="  German Dub  ")
+    commands: list[list[str]] = []
+    monkeypatch.setattr("dubgraft.processing.shutil.which", lambda name: "/bin/ffmpeg")
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        Path(command[-1]).touch()
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("dubgraft.processing.subprocess.run", fake_run)
+
+    mux_source_audio(config, target_info, source_audio, offset=0)
+
+    assert "language=ger" in commands[-1]
+    assert "title=German Dub" in commands[-1]
+
+
+def test_mux_source_audio_rejects_unknown_language(
+    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+    config = replace(config, language="invalid")
+    monkeypatch.setattr("dubgraft.processing.shutil.which", lambda name: "/bin/ffmpeg")
+
+    with pytest.raises(ProcessingError, match="invalid language code"):
+        mux_source_audio(config, target_info, source_audio, offset=0)
+
+
+@pytest.mark.parametrize(
+    ("track_name", "error"),
+    [("", "must not be empty"), ("bad\x00name", "null character")],
+)
+def test_mux_source_audio_rejects_invalid_track_name(
+    track_name: str,
+    error: str,
+    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+    config = replace(config, track_name=track_name)
+    monkeypatch.setattr("dubgraft.processing.shutil.which", lambda name: "/bin/ffmpeg")
+
+    with pytest.raises(ProcessingError, match=error):
+        mux_source_audio(config, target_info, source_audio, offset=0)
+
+
 @pytest.mark.parametrize(
     ("timestamp", "expected"),
     [

@@ -21,6 +21,11 @@ from dubgraft.media import (
     select_audio_stream,
     validate_ffmpeg,
 )
+from dubgraft.processing import (
+    InconclusiveTimelineError,
+    ProcessingError,
+    process_media,
+)
 
 
 def _stream_index(value: str) -> int:
@@ -267,14 +272,14 @@ def _select_processing_audio(
     path: Path,
     index: int | None,
     option: str,
-) -> MediaStream:
+) -> tuple[MediaInfo, MediaStream]:
     try:
         info = probe_media(path)
     except MediaProbeError as error:
         parser.exit(1, f"{parser.prog}: error: could not inspect {role}: {error}\n")
 
     try:
-        return select_audio_stream(info, index)
+        return info, select_audio_stream(info, index)
     except AudioSelectionError as error:
         lines = [f"{parser.prog}: error: could not select {role} audio: {error}"]
         if error.candidates:
@@ -320,20 +325,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         validate_ffmpeg()
     except FFmpegError as error:
         parser.exit(1, f"{parser.prog}: error: {error}\n")
-    _select_processing_audio(
+    _, source_audio = _select_processing_audio(
         parser,
         "Source",
         config.source,
         config.source_audio_index,
         "-S INDEX or --source-audio",
     )
-    _select_processing_audio(
+    target_info, target_audio = _select_processing_audio(
         parser,
         "Target",
         config.target,
         config.target_audio_index,
         "-T INDEX or --target-audio",
     )
+    try:
+        process_media(config, target_info, source_audio, target_audio)
+    except InconclusiveTimelineError as error:
+        parser.exit(1, f"{parser.prog}: error: inconclusive analysis: {error}\n")
+    except (FFmpegError, ProcessingError) as error:
+        parser.exit(1, f"{parser.prog}: error: {error}\n")
+    print(f"Created: {config.output}")
     return 0
 
 

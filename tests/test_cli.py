@@ -5,12 +5,15 @@ import pytest
 from dubgraft import __version__
 from dubgraft.cli import main, parse_processing_config
 from dubgraft.config import ProcessingConfig
+from dubgraft.matching import TimelineAnalysis, TimelineKind
 from dubgraft.media import FFmpegError, MediaInfo, MediaProbeError, MediaStream
+from dubgraft.processing import InconclusiveTimelineError
 
 
 @pytest.fixture
 def available_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("dubgraft.cli.validate_ffmpeg", lambda: None)
+    monkeypatch.setattr("dubgraft.cli.process_media", lambda *args, **kwargs: None)
 
 
 def single_audio_info(path: Path) -> MediaInfo:
@@ -218,6 +221,44 @@ def test_cli_selects_explicit_audio_stream_indices(
             ]
         )
         == 0
+    )
+
+
+def test_cli_reports_inconclusive_timeline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    available_ffmpeg: None,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+    monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
+    analysis = TimelineAnalysis(
+        TimelineKind.INCONCLUSIVE,
+        None,
+        None,
+        None,
+        None,
+        None,
+        0,
+        0,
+        None,
+        "no anchors were found",
+    )
+
+    def fail_processing(*args: object, **kwargs: object) -> None:
+        raise InconclusiveTimelineError(analysis)
+
+    monkeypatch.setattr("dubgraft.cli.process_media", fail_processing)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main([str(source), str(target), str(tmp_path / "output.mkv")])
+
+    assert exit_info.value.code == 1
+    assert (
+        "inconclusive analysis: no anchors were found" in capsys.readouterr().err
     )
 
 

@@ -6,10 +6,8 @@ from importlib.resources import files
 from itertools import product
 from string import ascii_lowercase
 
-
 LANGUAGE_CODES_URL = (
-    "https://github.com/NightCorpse/DubGraft/blob/main/"
-    "src/dubgraft/data/iso-639-2.csv"
+    "https://github.com/NightCorpse/DubGraft/blob/main/src/dubgraft/data/iso-639-2.csv"
 )
 
 
@@ -39,10 +37,7 @@ def _language_codes() -> dict[str, str]:
 
 def _suggest_language_code(code: str) -> str | None:
     transpositions = {
-        code[:index]
-        + code[index + 1]
-        + code[index]
-        + code[index + 2 :]
+        code[:index] + code[index + 1] + code[index] + code[index + 2 :]
         for index in range(len(code) - 1)
     }
     matches = {
@@ -57,7 +52,7 @@ def _suggest_language_code(code: str) -> str | None:
         canonical
         for candidate, canonical in _language_codes().items()
         if len(candidate) == len(code)
-        and sum(left != right for left, right in zip(candidate, code)) == 1
+        and sum(left != right for left, right in zip(candidate, code, strict=True)) == 1
     }
     return matches.pop() if len(matches) == 1 else None
 

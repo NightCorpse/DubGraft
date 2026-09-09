@@ -6,7 +6,6 @@ from pathlib import Path
 
 from dubgraft.languages import LanguageCodeError, normalize_language_code
 
-
 ANALYSIS_SAMPLE_RATE = 22_050
 MIN_RECOMMENDED_CONFIDENCE = 20.0
 MAX_RECOMMENDED_DIRECT_LIMIT_SECONDS = 0.05
@@ -80,7 +79,9 @@ def _resolve_output_path(config: ProcessingConfig) -> Path | None:
         return output
     target = config.target.expanduser().resolve()
     if not target.suffix:
-        raise ConfigurationError("Output must include an extension when Target has none")
+        raise ConfigurationError(
+            "Output must include an extension when Target has none"
+        )
     return output.with_name(output.name + target.suffix)
 
 
@@ -97,7 +98,9 @@ def validate_log_path(config: ProcessingConfig) -> Path | None:
         if path is not None:
             reserved_paths.add(path.expanduser().resolve())
     if log in reserved_paths:
-        raise ConfigurationError("Log must not replace an input, Output, or Report file")
+        raise ConfigurationError(
+            "Log must not replace an input, Output, or Report file"
+        )
     if log.is_dir():
         raise ConfigurationError(f"Log is a directory: {log}")
     if not log.parent.is_dir():
@@ -233,7 +236,9 @@ def validate_processing_config(config: ProcessingConfig) -> ProcessingConfig:
                 f"Output already exists: {output}; use --overwrite to replace it"
             )
         if not output.parent.is_dir():
-            raise ConfigurationError(f"Output directory does not exist: {output.parent}")
+            raise ConfigurationError(
+                f"Output directory does not exist: {output.parent}"
+            )
 
     if report is not None:
         if report in {source, target}:
@@ -247,7 +252,9 @@ def validate_processing_config(config: ProcessingConfig) -> ProcessingConfig:
                 f"Report already exists: {report}; use --overwrite to replace it"
             )
         if not report.parent.is_dir():
-            raise ConfigurationError(f"Report directory does not exist: {report.parent}")
+            raise ConfigurationError(
+                f"Report directory does not exist: {report.parent}"
+            )
 
     return ProcessingConfig(
         source=source,

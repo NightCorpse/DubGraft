@@ -177,7 +177,9 @@ def test_mux_source_audio_preserves_target_and_applies_static_offset(
     offset: float,
     option: str,
     value: str,
-    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
@@ -185,7 +187,9 @@ def test_mux_source_audio_preserves_target_and_applies_static_offset(
     commands: list[list[str]] = []
     monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
 
-    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
         commands.append(command)
         Path(command[-1]).touch()
         return subprocess.CompletedProcess(command, 0, "", "")
@@ -224,7 +228,9 @@ def test_mux_source_audio_preserves_target_and_applies_static_offset(
 
 
 def test_mux_source_audio_overrides_metadata(
-    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
@@ -232,7 +238,9 @@ def test_mux_source_audio_overrides_metadata(
     commands: list[list[str]] = []
     monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
 
-    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
         commands.append(command)
         Path(command[-1]).touch()
         return subprocess.CompletedProcess(command, 0, "", "")
@@ -252,7 +260,9 @@ def test_mux_source_audio_overrides_metadata(
 
 
 def test_mux_source_audio_rejects_unknown_language(
-    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
@@ -270,7 +280,9 @@ def test_mux_source_audio_rejects_unknown_language(
 def test_mux_source_audio_rejects_invalid_track_name(
     track_name: str,
     error: str,
-    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
@@ -375,7 +387,9 @@ def test_ffmpeg_progress_stops_on_interrupt(
 
 
 def test_mux_source_audio_keeps_existing_output_when_ffmpeg_fails(
-    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
@@ -383,7 +397,9 @@ def test_mux_source_audio_keeps_existing_output_when_ffmpeg_fails(
     monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
     monkeypatch.setattr(
         "dubgraft.execution.subprocess.run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, "", "mux failed"),
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 1, "", "mux failed"
+        ),
     )
 
     with pytest.raises(FFmpegError, match="mux failed"):
@@ -393,13 +409,17 @@ def test_mux_source_audio_keeps_existing_output_when_ffmpeg_fails(
 
 
 def test_mux_source_audio_does_not_publish_over_a_late_output(
-    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
     monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
 
-    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
         Path(command[-1]).touch()
         config.output.write_text("late output", encoding="utf-8")
         return subprocess.CompletedProcess(command, 0, "", "")
@@ -423,14 +443,18 @@ def test_mux_source_audio_does_not_publish_over_a_late_output(
 def test_mux_drift_audio_retimes_only_the_new_audio_stream(
     intercept: float,
     filter_fragment: str,
-    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
     commands: list[list[str]] = []
     monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
 
-    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
         commands.append(command)
         Path(command[-1]).touch()
         return subprocess.CompletedProcess(command, 0, "", "")
@@ -470,7 +494,9 @@ def test_mux_drift_audio_retimes_only_the_new_audio_stream(
 
 
 def test_output_validation_accepts_expected_mux(
-    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
@@ -489,13 +515,13 @@ def test_output_validation_accepts_expected_mux(
 
 
 def test_output_validation_rejects_metadata_change(
-    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
-    invalid = output_info(
-        config.output, target_info, source_audio, language="eng"
-    )
+    invalid = output_info(config.output, target_info, source_audio, language="eng")
     monkeypatch.setattr("dubgraft.processing.probe_media", lambda path: invalid)
 
     with pytest.raises(
@@ -511,7 +537,9 @@ def test_output_validation_rejects_metadata_change(
 
 
 def test_output_validation_rejects_chapter_and_disposition_changes(
-    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
@@ -547,7 +575,9 @@ def test_output_validation_rejects_chapter_and_disposition_changes(
 
 
 def test_output_validation_rejects_added_audio_timing_change(
-    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
@@ -584,7 +614,9 @@ def test_output_validation_rejects_added_audio_timing_change(
 
 
 def test_output_validation_identifies_reordered_added_audio(
-    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
@@ -617,7 +649,9 @@ def test_output_validation_identifies_reordered_added_audio(
 
 
 def test_output_validation_rejects_hdr_side_data_change(
-    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
@@ -648,7 +682,9 @@ def test_output_validation_rejects_hdr_side_data_change(
 
 
 def test_output_validation_accepts_mp4_cover_thumbnail_disposition(
-    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
@@ -687,7 +723,9 @@ def test_output_validation_accepts_mp4_cover_thumbnail_disposition(
 
 
 def test_mux_preflight_suggests_target_extension(
-    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, _, target_info, _, _ = processing_media
@@ -703,7 +741,9 @@ def test_mux_preflight_suggests_target_extension(
 
 
 def test_mux_preflight_preserves_mp4_dolby_vision(
-    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, _, target_info, _, _ = processing_media
@@ -724,13 +764,17 @@ def test_mux_preflight_preserves_mp4_dolby_vision(
 
 
 def test_mux_does_not_publish_failed_validation(
-    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
     monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
 
-    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
         Path(command[-1]).touch()
         return subprocess.CompletedProcess(command, 0, "", "")
 
@@ -764,9 +808,7 @@ def test_mux_drift_audio_rejects_unsupported_channel_count(
         )
 
 
-@pytest.mark.parametrize(
-    "profile", ["Dolby Digital Plus + Dolby Atmos", "E-AC-3 JOC"]
-)
+@pytest.mark.parametrize("profile", ["Dolby Digital Plus + Dolby Atmos", "E-AC-3 JOC"])
 def test_mux_drift_audio_rejects_atmos_metadata_loss(
     profile: str,
     processing_media: tuple[
@@ -966,7 +1008,9 @@ def test_reconstructed_audio_rejects_implicit_layout_change(
     )
     monkeypatch.setattr(
         "dubgraft.processing.probe_media",
-        lambda path: MediaInfo(path, "matroska,webm", 1, None, None, (reconstructed_audio,)),
+        lambda path: MediaInfo(
+            path, "matroska,webm", 1, None, None, (reconstructed_audio,)
+        ),
     )
 
     with pytest.raises(ProcessingError, match="changed channel count.*conversion"):
@@ -984,7 +1028,9 @@ def test_process_media_muxes_direct_and_static_timelines(
     kind: TimelineKind,
     median_offset: float,
     expected_offset: float,
-    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, source_info, target_info, source_audio, target_audio = processing_media
@@ -1011,7 +1057,9 @@ def test_process_media_muxes_direct_and_static_timelines(
 
 
 def test_process_media_reports_inconclusive_timeline_without_muxing(
-    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, source_info, target_info, source_audio, target_audio = processing_media
@@ -1041,7 +1089,9 @@ def test_process_media_reports_inconclusive_timeline_without_muxing(
 
 
 def test_process_media_reconstructs_drift(
-    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, source_info, target_info, source_audio, target_audio = processing_media
@@ -1082,7 +1132,9 @@ def test_process_media_requires_output_before_matching(
 @pytest.mark.parametrize("duration", [None, 0, float("nan"), float("inf")])
 def test_process_media_requires_a_finite_target_duration(
     duration: float | None,
-    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
 ) -> None:
     config, source_info, target_info, source_audio, target_audio = processing_media
 

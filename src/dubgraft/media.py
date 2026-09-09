@@ -236,9 +236,7 @@ def _dolby_vision(side_data: Any) -> str | None:
     return None
 
 
-def _stream_side_data(
-    raw: Any, kind: str, expected_kind: str
-) -> tuple[str, ...]:
+def _stream_side_data(raw: Any, kind: str, expected_kind: str) -> tuple[str, ...]:
     if kind != expected_kind or not isinstance(raw, list):
         return ()
     return tuple(

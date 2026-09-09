@@ -9,8 +9,8 @@ from dubgraft.media import (
     AudioSelectionError,
     FFmpegError,
     FFmpegInfo,
-    MediaInfo,
     MediaChapter,
+    MediaInfo,
     MediaProbeError,
     MediaStream,
     extract_audio_window,
@@ -35,7 +35,9 @@ def test_validate_ffmpeg_reads_version(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[list[str], dict[str, object]]] = []
     monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
 
-    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
         calls.append((command, kwargs))
         return subprocess.CompletedProcess(command, 0, "ffmpeg version 9.0\n", "")
 
@@ -69,7 +71,9 @@ def test_validate_ffmpeg_rejects_invalid_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
-    monkeypatch.setattr("dubgraft.execution.subprocess.run", lambda *args, **kwargs: result)
+    monkeypatch.setattr(
+        "dubgraft.execution.subprocess.run", lambda *args, **kwargs: result
+    )
 
     with pytest.raises(FFmpegError, match=message):
         validate_ffmpeg()
@@ -84,7 +88,9 @@ def test_extract_audio_window_reads_selected_stream_as_normalized_mono_pcm(
     calls: list[tuple[list[str], dict[str, object]]] = []
     monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
 
-    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+    def fake_run(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
         calls.append((command, kwargs))
         return subprocess.CompletedProcess(command, 0, pcm, b"")
 
@@ -148,9 +154,10 @@ def test_select_audio_stream_uses_global_stream_index() -> None:
     first_audio = MediaStream(index=1, kind="audio", codec="aac")
     second_audio = MediaStream(index=4, kind="audio", codec="eac3")
 
-    assert select_audio_stream(
-        media_info(video, first_audio, second_audio), index=4
-    ) is second_audio
+    assert (
+        select_audio_stream(media_info(video, first_audio, second_audio), index=4)
+        is second_audio
+    )
 
 
 def test_select_audio_stream_reports_ambiguous_audio_candidates() -> None:
@@ -188,7 +195,7 @@ def test_probe_media_reads_ffprobe_json(
     media = tmp_path / "episode.mkv"
     media.touch()
     payload = {
-            "streams": [
+        "streams": [
             {
                 "index": 0,
                 "codec_type": "video",
@@ -218,32 +225,32 @@ def test_probe_media_reads_ffprobe_json(
                 "channel_layout": "5.1(side)",
                 "bit_rate": "640000",
                 "tags": {"language": "eng", "name": "English"},
-                "side_data_list": [
-                    {"side_data_type": "Dolby object audio metadata"}
-                ],
+                "side_data_list": [{"side_data_type": "Dolby object audio metadata"}],
             },
             {"index": 2, "codec_type": "subtitle", "codec_name": "subrip"},
-            ],
-            "chapters": [
-                {
-                    "start_time": "0.000000",
-                    "end_time": "12.500000",
-                    "tags": {"title": "Opening"},
-                }
-            ],
-            "format": {
-                "format_name": "matroska,webm",
-                "duration": "3217.952",
-                "size": "1994237191",
-                "bit_rate": "4957779",
-                "tags": {"title": "Episode"},
+        ],
+        "chapters": [
+            {
+                "start_time": "0.000000",
+                "end_time": "12.500000",
+                "tags": {"title": "Opening"},
+            }
+        ],
+        "format": {
+            "format_name": "matroska,webm",
+            "duration": "3217.952",
+            "size": "1994237191",
+            "bit_rate": "4957779",
+            "tags": {"title": "Episode"},
         },
     }
     calls: list[tuple[list[str], dict[str, object]]] = []
 
     monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffprobe")
 
-    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
         calls.append((command, kwargs))
         return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
 
@@ -291,7 +298,9 @@ def test_probe_media_reports_ffprobe_failure(
     monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffprobe")
     monkeypatch.setattr(
         "dubgraft.execution.subprocess.run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, "", "Invalid data"),
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 1, "", "Invalid data"
+        ),
     )
 
     with pytest.raises(MediaProbeError, match="Invalid data"):

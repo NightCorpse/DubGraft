@@ -147,7 +147,9 @@ def test_select_distributed_anchors_keeps_strong_separated_candidates() -> None:
     assert [anchor.target_time for anchor in anchors] == [260, 520]
 
 
-def timeline_anchors(*, slope: float = 1.0, intercept: float = 0.0) -> tuple[AudioMatch, ...]:
+def timeline_anchors(
+    *, slope: float = 1.0, intercept: float = 0.0
+) -> tuple[AudioMatch, ...]:
     return tuple(
         AudioMatch(
             target_time=target_time,
@@ -280,9 +282,9 @@ def test_analyze_timeline_ignores_a_minority_offset_outlier() -> None:
 
 
 def test_analyze_timeline_excludes_outliers_from_coverage() -> None:
-    anchors = tuple(
-        AudioMatch(time, time, 0, 100) for time in range(100, 301, 25)
-    ) + (AudioMatch(900, 900.15, 0.15, 100),)
+    anchors = tuple(AudioMatch(time, time, 0, 100) for time in range(100, 301, 25)) + (
+        AudioMatch(900, 900.15, 0.15, 100),
+    )
 
     result = analyze_timeline(anchors, 1000)
 

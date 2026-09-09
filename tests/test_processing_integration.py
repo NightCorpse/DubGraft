@@ -14,7 +14,6 @@ from dubgraft.processing import (
     validate_render_compatibility,
 )
 
-
 pytestmark = pytest.mark.skipif(
     shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
     reason="FFmpeg and FFprobe are required",
@@ -76,7 +75,9 @@ def synthetic_media(tmp_path: Path) -> tuple[Path, Path]:
     return source, target
 
 
-@pytest.mark.parametrize("kind", [TimelineKind.DIRECT, TimelineKind.STATIC, TimelineKind.DRIFT])
+@pytest.mark.parametrize(
+    "kind", [TimelineKind.DIRECT, TimelineKind.STATIC, TimelineKind.DRIFT]
+)
 def test_synthetic_direct_static_and_drift_outputs(
     kind: TimelineKind,
     synthetic_media: tuple[Path, Path],
@@ -134,7 +135,9 @@ def test_synthetic_direct_static_and_drift_outputs(
     )
     assert {phase for phase, _, _ in progress} == expected_phases
     for phase in expected_phases:
-        values = [(completed, total) for name, completed, total in progress if name == phase]
+        values = [
+            (completed, total) for name, completed, total in progress if name == phase
+        ]
         assert values[-1][0] == values[-1][1]
         assert values == sorted(values)
     if kind is TimelineKind.STATIC:
@@ -143,7 +146,11 @@ def test_synthetic_direct_static_and_drift_outputs(
     assert validated.path == output.resolve()
     output_info = probe_media(output)
     assert output_info.duration == pytest.approx(target_info.duration, abs=0.05)
-    assert [stream.kind for stream in output_info.streams] == ["video", "audio", "audio"]
+    assert [stream.kind for stream in output_info.streams] == [
+        "video",
+        "audio",
+        "audio",
+    ]
     assert output_info.streams[0].codec == "ffv1"
     assert output_info.streams[1].codec == "pcm_s16le"
     assert output_info.streams[2].codec == "eac3"
@@ -265,8 +272,7 @@ def test_mp4_cover_art_survives_mux(tmp_path: Path) -> None:
     cover = tmp_path / "cover.jpg"
     metadata = tmp_path / "chapters.ffmeta"
     metadata.write_text(
-        ";FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\n"
-        "START=0\nEND=500\ntitle=Opening\n",
+        ";FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=500\ntitle=Opening\n",
         encoding="utf-8",
     )
     run_ffmpeg(

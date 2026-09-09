@@ -88,7 +88,9 @@ def test_run_capture_configures_text_execution(
 ) -> None:
     calls: list[tuple[list[str], dict[str, object]]] = []
 
-    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
         calls.append((command, kwargs))
         return subprocess.CompletedProcess(command, 0, "output", "")
 
@@ -114,7 +116,9 @@ def test_run_capture_configures_binary_execution_without_timeout(
 ) -> None:
     calls: list[dict[str, object]] = []
 
-    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+    def fake_run(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
         calls.append(kwargs)
         return subprocess.CompletedProcess(command, 0, b"audio", b"")
 
@@ -124,9 +128,8 @@ def test_run_capture_configures_binary_execution_without_timeout(
 
     assert result.stdout == b"audio"
     assert calls[0] == {
+        "capture_output": True,
         "check": False,
-        "stdout": subprocess.PIPE,
-        "stderr": subprocess.PIPE,
         "timeout": None,
     }
 

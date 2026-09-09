@@ -10,7 +10,6 @@ from pathlib import Path
 from types import TracebackType
 from typing import TextIO
 
-
 _log_context: ContextVar[object | None] = ContextVar(
     "dubgraft_log_context", default=None
 )

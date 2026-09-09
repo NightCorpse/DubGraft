@@ -10,7 +10,6 @@ from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
 from typing import Literal, overload
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -105,8 +104,7 @@ def run_capture(
             return text_result
         binary_result = subprocess.run(
             command_list,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
             timeout=timeout,
         )
@@ -208,7 +206,9 @@ def run_ffmpeg_progress(
             completed = 0.0
             try:
                 for seconds in iter_progress_times(process.stdout):
-                    current = min(max(seconds, completed, 0.0), expected_duration * 0.99)
+                    current = min(
+                        max(seconds, completed, 0.0), expected_duration * 0.99
+                    )
                     if current > completed:
                         completed = current
                         try:
@@ -227,7 +227,7 @@ def run_ffmpeg_progress(
             detail = diagnostics.read().strip()
     except OSError as error:
         if callback_error is not None:
-            raise callback_error
+            raise callback_error from None
         raise CommandLaunchError(str(error)) from error
 
     if return_code != 0:

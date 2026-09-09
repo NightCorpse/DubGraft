@@ -152,7 +152,9 @@ def build_report(
 def write_json_report(path: Path, report: dict[str, Any], *, overwrite: bool) -> None:
     """Publish a JSON report without partially replacing an existing file."""
     try:
-        with tempfile.TemporaryDirectory(prefix=".dubgraft-report-", dir=path.parent) as temp:
+        with tempfile.TemporaryDirectory(
+            prefix=".dubgraft-report-", dir=path.parent
+        ) as temp:
             temporary_report = Path(temp) / path.name
             temporary_report.write_text(
                 json.dumps(report, indent=2, ensure_ascii=True) + "\n",

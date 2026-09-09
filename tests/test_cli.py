@@ -17,7 +17,9 @@ from dubgraft.report import ReportError
 def available_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("dubgraft.cli.validate_ffmpeg", lambda: None)
     monkeypatch.setattr("dubgraft.cli.validate_mux_compatibility", lambda *args: None)
-    monkeypatch.setattr("dubgraft.cli.validate_render_compatibility", lambda *args: None)
+    monkeypatch.setattr(
+        "dubgraft.cli.validate_render_compatibility", lambda *args: None
+    )
 
     def render(
         config: ProcessingConfig,
@@ -800,9 +802,7 @@ def test_cli_reports_inconclusive_timeline(
     )
     result = MatchingResult((), (), 4, 20, analysis)
 
-    monkeypatch.setattr(
-        "dubgraft.cli.analyze_media", lambda *args, **kwargs: result
-    )
+    monkeypatch.setattr("dubgraft.cli.analyze_media", lambda *args, **kwargs: result)
 
     with pytest.raises(SystemExit) as exit_info:
         main([str(source), str(target), str(tmp_path / "output.mkv")])
@@ -1379,7 +1379,9 @@ def test_cli_never_allows_output_to_replace_an_input(
         main([str(source), str(target), str(output), "--overwrite"])
 
     assert exit_info.value.code == 2
-    assert f"Output must not be the {input_name.title()} file" in capsys.readouterr().err
+    assert (
+        f"Output must not be the {input_name.title()} file" in capsys.readouterr().err
+    )
 
 
 def test_cli_rejects_missing_output_directory(

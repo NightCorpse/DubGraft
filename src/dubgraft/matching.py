@@ -3,7 +3,7 @@
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 import numpy as np
@@ -29,7 +29,7 @@ class AudioMatch:
     confidence: float
 
 
-class TimelineKind(str, Enum):
+class TimelineKind(StrEnum):
     DIRECT = "direct"
     STATIC = "static"
     DRIFT = "drift"
@@ -59,6 +59,10 @@ class MatchingResult:
     requested_anchor_count: int
     minimum_anchor_distance: float
     timeline: TimelineAnalysis
+
+
+_DEFAULT_MATCHING_CONFIG = MatchingConfig()
+_DEFAULT_TIMELINE_CONFIG = TimelineConfig()
 
 
 def correlate_audio(
@@ -99,7 +103,7 @@ def scan_audio_matches(
     target: Path,
     target_stream_index: int,
     target_duration: float,
-    config: MatchingConfig = MatchingConfig(),
+    config: MatchingConfig = _DEFAULT_MATCHING_CONFIG,
     *,
     progress: Callable[[int, int], None] | None = None,
 ) -> tuple[AudioMatch, ...]:
@@ -185,7 +189,7 @@ def select_distributed_anchors(
 def analyze_timeline(
     anchors: tuple[AudioMatch, ...],
     target_duration: float,
-    config: TimelineConfig = TimelineConfig(),
+    config: TimelineConfig = _DEFAULT_TIMELINE_CONFIG,
     *,
     source_duration: float | None = None,
 ) -> TimelineAnalysis:
@@ -255,9 +259,7 @@ def analyze_timeline(
     if np.unique(target_times).size < 2:
         raise ValueError("anchors must contain at least two distinct Target times")
 
-    stable_mask = (
-        np.abs(offsets - median_offset) <= config.stability_tolerance_seconds
-    )
+    stable_mask = np.abs(offsets - median_offset) <= config.stability_tolerance_seconds
     stable_target_times = target_times[stable_mask]
     use_stable_consensus = (
         stable_ratio >= config.minimum_stable_ratio
@@ -340,8 +342,8 @@ def match_audio_streams(
     target: Path,
     target_stream_index: int,
     target_duration: float,
-    config: MatchingConfig = MatchingConfig(),
-    timeline_config: TimelineConfig = TimelineConfig(),
+    config: MatchingConfig = _DEFAULT_MATCHING_CONFIG,
+    timeline_config: TimelineConfig = _DEFAULT_TIMELINE_CONFIG,
     *,
     source_duration: float | None = None,
     progress: Callable[[int, int], None] | None = None,
@@ -360,7 +362,8 @@ def match_audio_streams(
     anchor_count = config.anchor_count
     if anchor_count is None:
         anchor_count = max(
-            calculate_anchor_count(target_duration), timeline_config.minimum_anchor_count
+            calculate_anchor_count(target_duration),
+            timeline_config.minimum_anchor_count,
         )
     if anchor_count < timeline_config.minimum_anchor_count:
         raise ConfigurationError(

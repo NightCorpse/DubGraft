@@ -7,17 +7,17 @@ from pathlib import Path
 
 from dubgraft import __version__
 from dubgraft.config import (
-    ConfigurationError,
     MAX_RECOMMENDED_DIRECT_LIMIT_SECONDS,
     MIN_RECOMMENDED_CONFIDENCE,
+    ConfigurationError,
     MatchingConfig,
     ProcessingConfig,
     TimelineConfig,
     validate_log_path,
     validate_processing_config,
 )
-from dubgraft.matching import MatchingResult, TimelineKind
 from dubgraft.languages import LanguageCodeError, normalize_language_code
+from dubgraft.matching import MatchingResult, TimelineKind
 from dubgraft.media import (
     AudioSelectionError,
     FFmpegError,
@@ -398,11 +398,11 @@ def parse_processing_config(
     parser = parser or build_parser()
     arguments = parser.parse_intermixed_args(argv)
     source = _resolve_argument(
-            parser, "SOURCE", arguments.positional_source, arguments.explicit_source
-        )
+        parser, "SOURCE", arguments.positional_source, arguments.explicit_source
+    )
     target = _resolve_argument(
-            parser, "TARGET", arguments.positional_target, arguments.explicit_target
-        )
+        parser, "TARGET", arguments.positional_target, arguments.explicit_target
+    )
     assert source is not None and target is not None
     return ProcessingConfig(
         source=source,

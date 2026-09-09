@@ -41,7 +41,6 @@ from dubgraft.media import (
     select_audio_stream,
 )
 
-
 logger = logging.getLogger(__name__)
 RenderProgress = Callable[[str, float, float], None]
 
@@ -243,13 +242,9 @@ def _audio_metadata_arguments(
     arguments = []
     language, title = _audio_metadata(config, source_audio)
     if language:
-        arguments.extend(
-            [f"-metadata:s:a:{audio_index}", f"language={language}"]
-        )
+        arguments.extend([f"-metadata:s:a:{audio_index}", f"language={language}"])
     if title:
-        arguments.extend(
-            [f"-metadata:s:a:{audio_index}", f"title={title}"]
-        )
+        arguments.extend([f"-metadata:s:a:{audio_index}", f"title={title}"])
     arguments.extend(
         [
             f"-disposition:a:{audio_index}",
@@ -284,7 +279,9 @@ def _target_stream_metadata_arguments(target_info: MediaInfo) -> list[str]:
     return arguments
 
 
-def _container_preservation_arguments(output: Path, target_info: MediaInfo) -> list[str]:
+def _container_preservation_arguments(
+    output: Path, target_info: MediaInfo
+) -> list[str]:
     if output.suffix.casefold() in {".mp4", ".m4v", ".mov"} and any(
         stream.dolby_vision for stream in target_info.streams
     ):
@@ -421,7 +418,7 @@ def _validate_output(
         fail(f"Output contains {len(extra_streams)} unexpected streams")
 
     for position, (target_stream, output_stream) in enumerate(
-        zip(target_info.streams, preserved_streams)
+        zip(target_info.streams, preserved_streams, strict=True)
     ):
         properties = ["kind", "codec", "language", "title"]
         if target_stream.kind == "video":
@@ -467,14 +464,14 @@ def _validate_output(
             and path.suffix.casefold() in {".mp4", ".m4v", ".mov"}
             and "default" not in target_stream.dispositions
             and not any(
-                stream.kind == target_stream.kind
-                and "default" in stream.dispositions
+                stream.kind == target_stream.kind and "default" in stream.dispositions
                 for stream in target_info.streams
             )
         ):
-            dispositions_match = tuple(
-                value for value in comparable_dispositions if value != "default"
-            ) == target_stream.dispositions
+            dispositions_match = (
+                tuple(value for value in comparable_dispositions if value != "default")
+                == target_stream.dispositions
+            )
         if not dispositions_match:
             fail(
                 f"Target stream {position} dispositions expected "
@@ -491,7 +488,7 @@ def _validate_output(
             f"{len(output_info.chapters)}"
         )
     for position, (target_chapter, output_chapter) in enumerate(
-        zip(target_info.chapters, output_info.chapters)
+        zip(target_info.chapters, output_info.chapters, strict=True)
     ):
         if (
             abs(output_chapter.start_time - target_chapter.start_time) > 0.05
@@ -516,9 +513,10 @@ def _validate_output(
         and path.suffix.casefold() in {".mp4", ".m4v", ".mov"}
         and "default" not in source_audio.dispositions
     ):
-        added_dispositions_match = tuple(
-            value for value in added_audio.dispositions if value != "default"
-        ) == source_audio.dispositions
+        added_dispositions_match = (
+            tuple(value for value in added_audio.dispositions if value != "default")
+            == source_audio.dispositions
+        )
     if not added_dispositions_match:
         fail(
             f"added audio dispositions expected {source_audio.dispositions!r}, "
@@ -605,7 +603,9 @@ def validate_mux_compatibility(
                     f"{error}"
                 ) from error
     except OSError as error:
-        raise ProcessingError(f"could not check Output compatibility: {error}") from error
+        raise ProcessingError(
+            f"could not check Output compatibility: {error}"
+        ) from error
 
 
 def validate_render_compatibility(
@@ -677,7 +677,9 @@ def validate_render_compatibility(
                     f"container{suggestion}: {error}"
                 ) from error
     except OSError as error:
-        raise ProcessingError(f"could not check audio compatibility: {error}") from error
+        raise ProcessingError(
+            f"could not check audio compatibility: {error}"
+        ) from error
 
 
 def _validate_reconstructed_audio(path: Path, source_audio: MediaStream) -> None:

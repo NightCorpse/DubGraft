@@ -30,6 +30,7 @@ classifiers = [
 dev = [
   "mypy>=1.15,<2",
   "pytest>=8,<10",
+  "pytest-cov>=6,<8",
   "ruff>=0.11,<1",
   "scipy-stubs>=1.12,<2",
 ]
@@ -51,8 +52,16 @@ version = { attr = "dubgraft.__version__" }
 where = ["src"]
 
 [tool.pytest.ini_options]
-addopts = "-ra"
+addopts = "-ra --cov=dubgraft --cov-report=term-missing"
 testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["dubgraft"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
 
 [tool.mypy]
 files = ["src/dubgraft"]

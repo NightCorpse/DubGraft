@@ -10,6 +10,7 @@ from dubgraft.media import (
     FFmpegError,
     FFmpegInfo,
     MediaInfo,
+    MediaChapter,
     MediaProbeError,
     MediaStream,
     extract_audio_window,
@@ -187,7 +188,7 @@ def test_probe_media_reads_ffprobe_json(
     media = tmp_path / "episode.mkv"
     media.touch()
     payload = {
-        "streams": [
+            "streams": [
             {
                 "index": 0,
                 "codec_type": "video",
@@ -219,12 +220,20 @@ def test_probe_media_reads_ffprobe_json(
                 "tags": {"language": "eng", "name": "English"},
             },
             {"index": 2, "codec_type": "subtitle", "codec_name": "subrip"},
-        ],
-        "format": {
-            "format_name": "matroska,webm",
-            "duration": "3217.952",
-            "size": "1994237191",
-            "bit_rate": "4957779",
+            ],
+            "chapters": [
+                {
+                    "start_time": "0.000000",
+                    "end_time": "12.500000",
+                    "tags": {"title": "Opening"},
+                }
+            ],
+            "format": {
+                "format_name": "matroska,webm",
+                "duration": "3217.952",
+                "size": "1994237191",
+                "bit_rate": "4957779",
+                "tags": {"title": "Episode"},
         },
     }
     calls: list[tuple[list[str], dict[str, object]]] = []
@@ -248,6 +257,8 @@ def test_probe_media_reads_ffprobe_json(
     assert info.streams[0].dolby_vision == "Dolby Vision P8.1"
     assert info.streams[1].language == "eng"
     assert info.streams[1].title == "English"
+    assert info.title == "Episode"
+    assert info.chapters == (MediaChapter(0, 12.5, "Opening"),)
     assert info.streams[1].channels == 6
     command, options = calls[0]
     assert command[0] == "/bin/ffprobe"

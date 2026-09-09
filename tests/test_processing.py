@@ -7,7 +7,7 @@ import pytest
 
 from dubgraft.config import ProcessingConfig
 from dubgraft.matching import MatchingResult, TimelineAnalysis, TimelineKind
-from dubgraft.media import FFmpegError, MediaInfo, MediaStream
+from dubgraft.media import FFmpegError, MediaChapter, MediaInfo, MediaStream
 from dubgraft.processing import (
     InconclusiveTimelineError,
     ProcessingError,
@@ -18,6 +18,7 @@ from dubgraft.processing import (
     mux_drift_audio,
     mux_source_audio,
     process_media,
+    validate_mux_compatibility,
 )
 
 
@@ -114,7 +115,14 @@ def processing_media(
         language="por",
         title="Brazilian Portuguese",
     )
-    target_audio = MediaStream(index=1, kind="audio", codec="eac3")
+    target_audio = MediaStream(
+        index=1,
+        kind="audio",
+        codec="eac3",
+        language="eng",
+        title="English",
+        dispositions=("default",),
+    )
     source_info = MediaInfo(source, "matroska,webm", 1000, None, None, (source_audio,))
     target_info = MediaInfo(
         target,
@@ -128,6 +136,8 @@ def processing_media(
             MediaStream(index=2, kind="audio", codec="aac"),
             MediaStream(index=4, kind="subtitle", codec="subrip"),
         ),
+        title="Target title",
+        chapters=(MediaChapter(0, 500, "First"), MediaChapter(500, 1000, "Second")),
     )
     config = ProcessingConfig(source, target, tmp_path / "output.mkv")
     return config, source_info, target_info, source_audio, target_audio
@@ -154,6 +164,8 @@ def output_info(
         None,
         None,
         (*target_info.streams, added_audio),
+        target_info.title,
+        target_info.chapters,
     )
 
 
@@ -204,6 +216,9 @@ def test_mux_source_audio_preserves_target_and_applies_static_offset(
     assert "-metadata:s:a:2" in command
     assert "language=por" in command
     assert "title=Brazilian Portuguese" in command
+    assert "title=English" in command
+    assert "-disposition:1" in command
+    assert command[command.index("-disposition:1") + 1] == "default"
     assert config.output.is_file()
 
 
@@ -461,16 +476,15 @@ def test_output_validation_accepts_expected_mux(
     expected = output_info(config.output, target_info, source_audio)
     monkeypatch.setattr("dubgraft.processing.probe_media", lambda path: expected)
 
-    assert (
-        _validate_output(
-            config.output,
-            config,
-            target_info,
-            source_audio,
-            audio_codec="eac3",
-        )
-        is expected
+    validated = _validate_output(
+        config.output,
+        config,
+        target_info,
+        source_audio,
+        audio_codec="eac3",
     )
+
+    assert validated == replace(expected, added_audio_stream_index=4)
 
 
 def test_output_validation_rejects_metadata_change(
@@ -493,6 +507,219 @@ def test_output_validation_rejects_metadata_change(
             source_audio,
             audio_codec="eac3",
         )
+
+
+def test_output_validation_rejects_chapter_and_disposition_changes(
+    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+    expected = output_info(config.output, target_info, source_audio)
+    changed_streams = list(expected.streams)
+    changed_streams[1] = replace(changed_streams[1], dispositions=())
+    monkeypatch.setattr(
+        "dubgraft.processing.probe_media",
+        lambda path: replace(expected, streams=tuple(changed_streams)),
+    )
+
+    with pytest.raises(ProcessingError, match="dispositions expected"):
+        _validate_output(
+            config.output,
+            config,
+            target_info,
+            source_audio,
+            audio_codec="eac3",
+        )
+
+    monkeypatch.setattr(
+        "dubgraft.processing.probe_media",
+        lambda path: replace(expected, chapters=expected.chapters[:-1]),
+    )
+    with pytest.raises(ProcessingError, match="expected 2 chapters"):
+        _validate_output(
+            config.output,
+            config,
+            target_info,
+            source_audio,
+            audio_codec="eac3",
+        )
+
+
+def test_output_validation_rejects_added_audio_timing_change(
+    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+    expected = output_info(config.output, target_info, source_audio)
+    streams = list(expected.streams)
+    streams[-1] = replace(streams[-1], start_time=0.25, duration=900)
+    monkeypatch.setattr(
+        "dubgraft.processing.probe_media",
+        lambda path: replace(expected, streams=tuple(streams)),
+    )
+
+    with pytest.raises(ProcessingError, match="added audio start expected"):
+        _validate_output(
+            config.output,
+            config,
+            target_info,
+            source_audio,
+            audio_codec="eac3",
+            audio_start_time=0,
+            audio_duration=999.9,
+        )
+
+    streams[-1] = replace(streams[-1], start_time=0, duration=900)
+    with pytest.raises(ProcessingError, match="added audio duration expected"):
+        _validate_output(
+            config.output,
+            config,
+            target_info,
+            source_audio,
+            audio_codec="eac3",
+            audio_start_time=0,
+            audio_duration=999.9,
+        )
+
+
+def test_output_validation_identifies_reordered_added_audio(
+    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+    added_audio = replace(source_audio, index=10)
+    reordered = MediaInfo(
+        config.output,
+        target_info.container,
+        target_info.duration,
+        None,
+        None,
+        (
+            target_info.streams[0],
+            added_audio,
+            *target_info.streams[1:],
+        ),
+        target_info.title,
+        target_info.chapters,
+    )
+    monkeypatch.setattr("dubgraft.processing.probe_media", lambda path: reordered)
+
+    validated = _validate_output(
+        config.output,
+        config,
+        target_info,
+        source_audio,
+        audio_codec="eac3",
+    )
+
+    assert validated.added_audio_stream_index == 10
+
+
+def test_output_validation_rejects_hdr_side_data_change(
+    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+    target_streams = list(target_info.streams)
+    target_streams[0] = replace(
+        target_streams[0],
+        video_side_data=(
+            '{"dv_profile":5,"side_data_type":"DOVI configuration record"}',
+        ),
+    )
+    target_info = replace(target_info, streams=tuple(target_streams))
+    invalid = output_info(config.output, target_info, source_audio)
+    invalid_streams = list(invalid.streams)
+    invalid_streams[0] = replace(invalid_streams[0], video_side_data=())
+    monkeypatch.setattr(
+        "dubgraft.processing.probe_media",
+        lambda path: replace(invalid, streams=tuple(invalid_streams)),
+    )
+
+    with pytest.raises(ProcessingError, match="video_side_data expected"):
+        _validate_output(
+            config.output,
+            config,
+            target_info,
+            source_audio,
+            audio_codec="eac3",
+        )
+
+
+def test_output_validation_accepts_mp4_cover_thumbnail_disposition(
+    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+    config = replace(config, output=config.output.with_suffix(".mp4"))
+    cover = MediaStream(
+        index=5,
+        kind="video",
+        codec="mjpeg",
+        width=600,
+        height=900,
+        pixel_format="yuvj444p",
+        attached_picture=True,
+        dispositions=("attached_pic",),
+    )
+    target_info = replace(target_info, streams=(*target_info.streams, cover))
+    expected = output_info(config.output, target_info, source_audio)
+    streams = list(expected.streams)
+    streams[-2] = replace(
+        streams[-2],
+        dispositions=("attached_pic", "timed_thumbnails"),
+    )
+    monkeypatch.setattr(
+        "dubgraft.processing.probe_media",
+        lambda path: replace(expected, streams=tuple(streams)),
+    )
+
+    validated = _validate_output(
+        config.output,
+        config,
+        target_info,
+        source_audio,
+        audio_codec="eac3",
+    )
+
+    assert validated.added_audio_stream_index == len(target_info.streams)
+
+
+def test_mux_preflight_suggests_target_extension(
+    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, target_info, _, _ = processing_media
+    config = replace(config, output=config.output.with_suffix(".mp4"))
+    monkeypatch.setattr("dubgraft.processing.shutil.which", lambda name: "/bin/ffmpeg")
+    monkeypatch.setattr(
+        "dubgraft.processing._run_ffmpeg",
+        lambda *args, **kwargs: (_ for _ in ()).throw(FFmpegError("unsupported codec")),
+    )
+
+    with pytest.raises(ProcessingError, match=r"Target extension \(.mkv\)"):
+        validate_mux_compatibility(config, target_info)
+
+
+def test_mux_preflight_preserves_mp4_dolby_vision(
+    processing_media: tuple[ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, target_info, _, _ = processing_media
+    config = replace(config, output=config.output.with_suffix(".mp4"))
+    streams = list(target_info.streams)
+    streams[0] = replace(streams[0], dolby_vision="Dolby Vision P5.0")
+    target_info = replace(target_info, streams=tuple(streams))
+    commands = []
+    monkeypatch.setattr("dubgraft.processing.shutil.which", lambda name: "/bin/ffmpeg")
+    monkeypatch.setattr(
+        "dubgraft.processing._run_ffmpeg",
+        lambda command, *args, **kwargs: commands.append(command),
+    )
+
+    validate_mux_compatibility(config, target_info)
+
+    assert commands[0][commands[0].index("-strict") + 1] == "unofficial"
 
 
 def test_mux_does_not_publish_failed_validation(

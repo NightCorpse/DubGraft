@@ -241,7 +241,46 @@ def _audio_metadata_arguments(
         arguments.extend(
             [f"-metadata:s:a:{audio_index}", f"title={title}"]
         )
+    arguments.extend(
+        [
+            f"-disposition:a:{audio_index}",
+            "+".join(source_audio.dispositions) or "0",
+        ]
+    )
     return arguments
+
+
+def _target_stream_metadata_arguments(target_info: MediaInfo) -> list[str]:
+    arguments = []
+    video_index = 0
+    for position, stream in enumerate(target_info.streams):
+        if stream.language:
+            arguments.extend([f"-metadata:s:{position}", f"language={stream.language}"])
+        if stream.title:
+            arguments.extend([f"-metadata:s:{position}", f"title={stream.title}"])
+        arguments.extend(
+            [f"-disposition:{position}", "+".join(stream.dispositions) or "0"]
+        )
+        if stream.kind == "video":
+            for option, value in (
+                ("color_range", stream.color_range),
+                ("colorspace", stream.color_space),
+                ("color_trc", stream.color_transfer),
+                ("color_primaries", stream.color_primaries),
+                ("chroma_sample_location", stream.chroma_location),
+            ):
+                if value:
+                    arguments.extend([f"-{option}:v:{video_index}", value])
+            video_index += 1
+    return arguments
+
+
+def _container_preservation_arguments(output: Path, target_info: MediaInfo) -> list[str]:
+    if output.suffix.casefold() in {".mp4", ".m4v", ".mov"} and any(
+        stream.dolby_vision for stream in target_info.streams
+    ):
+        return ["-strict", "unofficial"]
+    return []
 
 
 def _audio_metadata(
@@ -271,6 +310,8 @@ def _validate_output(
     source_audio: MediaStream,
     *,
     audio_codec: str,
+    audio_start_time: float = 0.0,
+    audio_duration: float | None = None,
 ) -> MediaInfo:
     def fail(detail: str) -> Never:
         raise ProcessingError(
@@ -282,19 +323,114 @@ def _validate_output(
     except MediaProbeError as error:
         fail(str(error))
 
-    expected_stream_count = len(target_info.streams) + 1
-    if len(output_info.streams) != expected_stream_count:
+    minimum_stream_count = len(target_info.streams) + 1
+    if len(output_info.streams) < minimum_stream_count:
         fail(
-            f"expected {expected_stream_count} streams, found "
+            f"expected at least {minimum_stream_count} streams, found "
             f"{len(output_info.streams)}"
         )
 
+    target_audio_count = sum(stream.kind == "audio" for stream in target_info.streams)
+    output_audio_positions = [
+        position
+        for position, stream in enumerate(output_info.streams)
+        if stream.kind == "audio"
+    ]
+    if len(output_audio_positions) != target_audio_count + 1:
+        fail(
+            f"expected {target_audio_count + 1} audio streams, found "
+            f"{len(output_audio_positions)}"
+        )
+    language, title = _audio_metadata(config, source_audio)
+    matching_added_positions = [
+        position
+        for position in output_audio_positions
+        if all(
+            getattr(output_info.streams[position], name) == expected
+            for name, expected in (
+                ("codec", audio_codec),
+                ("channels", source_audio.channels),
+                ("channel_layout", source_audio.channel_layout),
+                ("sample_rate", source_audio.sample_rate),
+            )
+            if expected is not None
+        )
+    ]
+
+    expected_position = output_audio_positions[target_audio_count]
+
+    def identification_score(position: int) -> tuple[int, int, float]:
+        stream = output_info.streams[position]
+        metadata_error = int(stream.title != title)
+        if language is None:
+            metadata_error += int(stream.language not in {None, "und"})
+        else:
+            metadata_error += int(stream.language != language)
+        timing_error = abs((stream.start_time or 0.0) - audio_start_time)
+        if audio_duration is not None and stream.duration is not None:
+            timing_error += abs(stream.duration - audio_duration)
+        return metadata_error, abs(position - expected_position), timing_error
+
+    added_audio_position = min(
+        matching_added_positions or [output_audio_positions[target_audio_count]],
+        key=identification_score,
+    )
+    added_audio = output_info.streams[added_audio_position]
+    output_without_added = (
+        output_info.streams[:added_audio_position]
+        + output_info.streams[added_audio_position + 1 :]
+    )
+    preserved_streams = []
+    used_positions: set[int] = set()
+    kind_offsets: dict[str, int] = {}
+    for target_stream in target_info.streams:
+        start = kind_offsets.get(target_stream.kind, 0)
+        match = next(
+            (
+                (position, stream)
+                for position, stream in enumerate(output_without_added[start:], start)
+                if stream.kind == target_stream.kind
+            ),
+            None,
+        )
+        if match is None:
+            fail(f"Target stream {target_stream.index} was not preserved")
+        position, stream = match
+        kind_offsets[target_stream.kind] = position + 1
+        used_positions.add(position)
+        preserved_streams.append(stream)
+    extra_streams = tuple(
+        stream
+        for position, stream in enumerate(output_without_added)
+        if position not in used_positions
+    )
+    if extra_streams and not (
+        target_info.chapters
+        and path.suffix.casefold() in {".mp4", ".m4v", ".mov"}
+        and all(stream.kind == "data" for stream in extra_streams)
+    ):
+        fail(f"Output contains {len(extra_streams)} unexpected streams")
+
     for position, (target_stream, output_stream) in enumerate(
-        zip(target_info.streams, output_info.streams)
+        zip(target_info.streams, preserved_streams)
     ):
         properties = ["kind", "codec", "language", "title"]
         if target_stream.kind == "video":
-            properties.extend(["width", "height", "pixel_format"])
+            properties.extend(
+                [
+                    "profile",
+                    "width",
+                    "height",
+                    "pixel_format",
+                    "color_space",
+                    "color_range",
+                    "color_transfer",
+                    "color_primaries",
+                    "chroma_location",
+                    "dolby_vision",
+                    "video_side_data",
+                ]
+            )
         elif target_stream.kind == "audio":
             properties.extend(["channels", "channel_layout", "sample_rate"])
         for name in properties:
@@ -305,12 +441,56 @@ def _validate_output(
                     f"Target stream {position} {name} expected {expected!r}, "
                     f"found {actual!r}"
                 )
+        comparable_dispositions = output_stream.dispositions
+        if (
+            path.suffix.casefold() in {".mp4", ".m4v", ".mov"}
+            and "attached_pic" in target_stream.dispositions
+            and "timed_thumbnails" in comparable_dispositions
+        ):
+            comparable_dispositions = tuple(
+                value
+                for value in comparable_dispositions
+                if value != "timed_thumbnails"
+            )
+        dispositions_match = comparable_dispositions == target_stream.dispositions
+        if (
+            not dispositions_match
+            and path.suffix.casefold() in {".mp4", ".m4v", ".mov"}
+            and "default" not in target_stream.dispositions
+            and not any(
+                stream.kind == target_stream.kind
+                and "default" in stream.dispositions
+                for stream in target_info.streams
+            )
+        ):
+            dispositions_match = tuple(
+                value for value in comparable_dispositions if value != "default"
+            ) == target_stream.dispositions
+        if not dispositions_match:
+            fail(
+                f"Target stream {position} dispositions expected "
+                f"{target_stream.dispositions!r}, found {output_stream.dispositions!r}"
+            )
 
-    added_audio = output_info.streams[-1]
-    if added_audio.kind != "audio":
-        fail(f"added stream expected audio, found {added_audio.kind}")
+    if target_info.title is not None and output_info.title != target_info.title:
+        fail(
+            f"Target title expected {target_info.title!r}, found {output_info.title!r}"
+        )
+    if len(output_info.chapters) != len(target_info.chapters):
+        fail(
+            f"expected {len(target_info.chapters)} chapters, found "
+            f"{len(output_info.chapters)}"
+        )
+    for position, (target_chapter, output_chapter) in enumerate(
+        zip(target_info.chapters, output_info.chapters)
+    ):
+        if (
+            abs(output_chapter.start_time - target_chapter.start_time) > 0.05
+            or abs(output_chapter.end_time - target_chapter.end_time) > 0.05
+            or output_chapter.title != target_chapter.title
+        ):
+            fail(f"Target chapter {position} changed during muxing")
 
-    language, title = _audio_metadata(config, source_audio)
     for name, expected, actual in (
         ("codec", audio_codec, added_audio.codec),
         ("channel count", source_audio.channels, added_audio.channels),
@@ -321,6 +501,36 @@ def _validate_output(
     ):
         if expected is not None and actual != expected:
             fail(f"added audio {name} expected {expected!r}, found {actual!r}")
+    added_dispositions_match = added_audio.dispositions == source_audio.dispositions
+    if (
+        not added_dispositions_match
+        and path.suffix.casefold() in {".mp4", ".m4v", ".mov"}
+        and "default" not in source_audio.dispositions
+    ):
+        added_dispositions_match = tuple(
+            value for value in added_audio.dispositions if value != "default"
+        ) == source_audio.dispositions
+    if not added_dispositions_match:
+        fail(
+            f"added audio dispositions expected {source_audio.dispositions!r}, "
+            f"found {added_audio.dispositions!r}"
+        )
+
+    actual_start_time = added_audio.start_time or 0.0
+    if abs(actual_start_time - audio_start_time) > 0.1:
+        fail(
+            f"added audio start expected {audio_start_time:.3f}s, found "
+            f"{actual_start_time:.3f}s"
+        )
+    if (
+        audio_duration is not None
+        and added_audio.duration is not None
+        and abs(added_audio.duration - audio_duration) > 0.1
+    ):
+        fail(
+            f"added audio duration expected {audio_duration:.3f}s, found "
+            f"{added_audio.duration:.3f}s"
+        )
 
     target_duration = _target_duration(target_info)
     output_duration = output_info.duration
@@ -333,7 +543,136 @@ def _validate_output(
             f"duration expected {target_duration:.3f}s, found "
             f"{output_duration if output_duration is not None else 'unavailable'}"
         )
-    return output_info
+    return replace(output_info, added_audio_stream_index=added_audio.index)
+
+
+def validate_mux_compatibility(
+    config: ProcessingConfig, target_info: MediaInfo
+) -> None:
+    """Check that the requested container can copy every Target stream."""
+    output = _output_path(config)
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise FFmpegError("ffmpeg was not found in PATH")
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=".dubgraft-preflight-", dir=output.parent
+        ) as temporary_directory:
+            temporary_output = Path(temporary_directory) / f"preflight{output.suffix}"
+            command = [
+                ffmpeg,
+                "-v",
+                "error",
+                "-y",
+                "-i",
+                str(config.target),
+                "-map",
+                "0",
+                "-map_metadata",
+                "0",
+                "-map_chapters",
+                "0",
+                "-c",
+                "copy",
+                "-copy_unknown",
+                "-t",
+                "0.1",
+            ]
+            command.extend(_target_stream_metadata_arguments(target_info))
+            command.extend(
+                _container_preservation_arguments(temporary_output, target_info)
+            )
+            command.append(str(temporary_output))
+            try:
+                _run_ffmpeg(command, "Output compatibility check")
+            except FFmpegError as error:
+                target_extension = target_info.path.suffix
+                suggestion = (
+                    f"; use an Output with the Target extension ({target_extension})"
+                    if target_extension
+                    and target_extension.casefold() != output.suffix.casefold()
+                    else ""
+                )
+                raise ProcessingError(
+                    f"Output container cannot preserve every Target stream{suggestion}: "
+                    f"{error}"
+                ) from error
+    except OSError as error:
+        raise ProcessingError(f"could not check Output compatibility: {error}") from error
+
+
+def validate_render_compatibility(
+    config: ProcessingConfig,
+    target_info: MediaInfo,
+    source_audio: MediaStream,
+    timeline_kind: TimelineKind,
+) -> None:
+    """Check the selected audio strategy against the requested container."""
+    output = _output_path(config)
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise FFmpegError("ffmpeg was not found in PATH")
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=".dubgraft-audio-preflight-", dir=output.parent
+        ) as temporary_directory:
+            temporary_output = Path(temporary_directory) / f"preflight{output.suffix}"
+            command = [ffmpeg, "-v", "error", "-y", "-i", str(config.target)]
+            if timeline_kind is TimelineKind.DRIFT:
+                command.extend(
+                    [
+                        "-f",
+                        "lavfi",
+                        "-i",
+                        "anullsrc=r=48000:cl=stereo:d=0.1",
+                    ]
+                )
+                source_stream = "1:0"
+            else:
+                command.extend(["-i", str(config.source)])
+                source_stream = f"1:{source_audio.index}"
+            command.extend(
+                [
+                    "-map",
+                    "0",
+                    "-map",
+                    source_stream,
+                    "-map_metadata",
+                    "0",
+                    "-map_chapters",
+                    "0",
+                    "-c",
+                    "copy",
+                    "-copy_unknown",
+                    "-t",
+                    "0.1",
+                ]
+            )
+            if timeline_kind is TimelineKind.DRIFT:
+                audio_index = sum(
+                    stream.kind == "audio" for stream in target_info.streams
+                )
+                command.extend([f"-c:a:{audio_index}", "eac3", "-b:a", "640k"])
+            command.extend(_target_stream_metadata_arguments(target_info))
+            command.extend(_audio_metadata_arguments(config, target_info, source_audio))
+            command.extend(
+                _container_preservation_arguments(temporary_output, target_info)
+            )
+            command.append(str(temporary_output))
+            try:
+                _run_ffmpeg(command, "audio compatibility check")
+            except FFmpegError as error:
+                suggestion = (
+                    "; try Matroska (.mkv) if it can preserve all Target streams"
+                    if output.suffix.casefold() != ".mkv"
+                    else ""
+                )
+                raise ProcessingError(
+                    f"selected audio strategy is incompatible with the Output "
+                    f"container{suggestion}: {error}"
+                ) from error
+    except OSError as error:
+        raise ProcessingError(f"could not check audio compatibility: {error}") from error
 
 
 def _validate_reconstructed_audio(path: Path, source_audio: MediaStream) -> None:
@@ -445,7 +784,11 @@ def mux_source_audio(
                     "disabled",
                 ]
             )
+            command.extend(_target_stream_metadata_arguments(target_info))
             command.extend(_audio_metadata_arguments(config, target_info, source_audio))
+            command.extend(
+                _container_preservation_arguments(temporary_output, target_info)
+            )
             command.append(str(temporary_output))
             _run_ffmpeg(
                 command,
@@ -461,6 +804,18 @@ def mux_source_audio(
                 target_info,
                 source_audio,
                 audio_codec=source_audio.codec,
+                audio_start_time=max(-offset, 0.0),
+                audio_duration=(
+                    max(
+                        0.0,
+                        min(
+                            target_duration - max(-offset, 0.0),
+                            source_duration - max(offset, 0.0),
+                        ),
+                    )
+                    if source_duration is not None
+                    else None
+                ),
             )
             _publish_output(temporary_output, config)
             return replace(output_info, path=output.expanduser().resolve())
@@ -604,7 +959,11 @@ def mux_drift_audio(
                 "-avoid_negative_ts",
                 "disabled",
             ]
+            command.extend(_target_stream_metadata_arguments(target_info))
             command.extend(_audio_metadata_arguments(config, target_info, source_audio))
+            command.extend(
+                _container_preservation_arguments(temporary_output, target_info)
+            )
             command.append(str(temporary_output))
             _run_ffmpeg(
                 command,
@@ -620,6 +979,8 @@ def mux_drift_audio(
                 target_info,
                 source_audio,
                 audio_codec="eac3",
+                audio_start_time=0.0,
+                audio_duration=target_duration,
             )
             _publish_output(temporary_output, config)
             return replace(output_info, path=output.expanduser().resolve())

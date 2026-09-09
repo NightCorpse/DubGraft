@@ -23,13 +23,21 @@ class ReportError(RuntimeError):
 
 
 def _added_audio(output_info: MediaInfo | None) -> MediaStream | None:
-    if (
-        output_info is None
-        or not output_info.streams
-        or output_info.streams[-1].kind != "audio"
-    ):
+    if output_info is None:
         return None
-    return output_info.streams[-1]
+    if output_info.added_audio_stream_index is not None:
+        return next(
+            (
+                stream
+                for stream in output_info.streams
+                if stream.index == output_info.added_audio_stream_index
+            ),
+            None,
+        )
+    return next(
+        (stream for stream in reversed(output_info.streams) if stream.kind == "audio"),
+        None,
+    )
 
 
 def _match_data(match: AudioMatch) -> dict[str, float]:
@@ -125,7 +133,9 @@ def build_report(
             "strategy": strategy,
             "rendered": status == "completed",
             "output_validated": added_audio is not None,
-            "target_streams_preserved": len(target_info.streams),
+            "target_streams_preserved": (
+                len(target_info.streams) if output_info is not None else None
+            ),
             "source_audio_codec": source_audio.codec,
             "source_audio_channels": source_audio.channels,
             "source_audio_channel_layout": source_audio.channel_layout,
@@ -256,7 +266,12 @@ def format_human_report(
             f"  Strategy: {strategy}",
             f"  Rendered: {'yes' if status == 'completed' else 'no'}",
             f"  Output validated: {'yes' if added_audio is not None else 'no'}",
-            f"  Target streams preserved: {len(target_info.streams)}",
+            "  Target streams preserved: "
+            + (
+                str(len(target_info.streams))
+                if output_info is not None
+                else "not validated"
+            ),
         ]
     )
     overrides = []

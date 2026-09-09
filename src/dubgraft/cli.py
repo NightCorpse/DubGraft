@@ -33,6 +33,8 @@ from dubgraft.processing import (
     ProcessingError,
     analyze_media,
     render_media,
+    validate_mux_compatibility,
+    validate_render_compatibility,
 )
 from dubgraft.report import (
     ReportError,
@@ -106,7 +108,19 @@ def format_processing_summary(
         lines.append(audio + ", re-encoded once")
 
     if output_info is not None:
-        lines.append(f"Added audio: {_format_audio(output_info.streams[-1])}")
+        added_audio = next(
+            (
+                stream
+                for stream in output_info.streams
+                if stream.index == output_info.added_audio_stream_index
+            ),
+            next(
+                stream
+                for stream in reversed(output_info.streams)
+                if stream.kind == "audio"
+            ),
+        )
+        lines.append(f"Added audio: {_format_audio(added_audio)}")
         lines.append("Output validation: passed")
     lines.extend(
         [
@@ -724,6 +738,12 @@ def _run_processing(
     output.detail(f"Target audio: {_format_audio(target_audio)}")
     if not config.analyze_only:
         _warn_missing_source_metadata(parser, config, source_audio, output)
+        try:
+            with output.stage("Checking Output compatibility"):
+                validate_mux_compatibility(config, target_info)
+        except (FFmpegError, ProcessingError) as error:
+            output.error(str(error))
+            parser.exit(1, f"{parser.prog}: error: {error}\n")
 
     try:
         with output.stage("Analyzing alignment") as stage:
@@ -804,13 +824,21 @@ def _run_processing(
 
     if not config.analyze_only:
         try:
+            with output.stage("Checking audio compatibility"):
+                validate_render_compatibility(
+                    config, target_info, source_audio, result.timeline.kind
+                )
             with output.stage("Rendering output") as stage:
                 output_info = render_media(
                     config,
                     target_info,
                     source_audio,
                     result,
-                    source_duration=source_info.duration,
+                    source_duration=(
+                        source_audio.duration
+                        if source_audio.duration is not None
+                        else source_info.duration
+                    ),
                     progress=lambda phase, completed, total: stage.update(
                         f"{phase} ({completed / total:.0%})"
                     ),

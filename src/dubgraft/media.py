@@ -51,8 +51,10 @@ class MediaStream:
     frame_rate: float | None = None
     pixel_format: str | None = None
     color_space: str | None = None
+    color_range: str | None = None
     color_transfer: str | None = None
     color_primaries: str | None = None
+    chroma_location: str | None = None
     sample_rate: int | None = None
     channels: int | None = None
     channel_layout: str | None = None
@@ -63,6 +65,16 @@ class MediaStream:
     hearing_impaired: bool = False
     attached_picture: bool = False
     dolby_vision: str | None = None
+    start_time: float | None = None
+    dispositions: tuple[str, ...] = ()
+    video_side_data: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class MediaChapter:
+    start_time: float
+    end_time: float
+    title: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +85,9 @@ class MediaInfo:
     size: int | None
     bit_rate: int | None
     streams: tuple[MediaStream, ...]
+    title: str | None = None
+    chapters: tuple[MediaChapter, ...] = ()
+    added_audio_stream_index: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +255,16 @@ def _dolby_vision(side_data: Any) -> str | None:
     return None
 
 
+def _video_side_data(raw: Any, kind: str) -> tuple[str, ...]:
+    if kind != "video" or not isinstance(raw, list):
+        return ()
+    return tuple(
+        json.dumps(entry, sort_keys=True, separators=(",", ":"))
+        for entry in raw
+        if isinstance(entry, dict)
+    )
+
+
 def _parse_stream(raw: Any) -> MediaStream:
     if not isinstance(raw, dict):
         raise MediaProbeError("ffprobe returned invalid stream data")
@@ -253,6 +278,10 @@ def _parse_stream(raw: Any) -> MediaStream:
     disposition = (
         raw.get("disposition") if isinstance(raw.get("disposition"), dict) else {}
     )
+    dispositions = tuple(
+        sorted(name for name, enabled in disposition.items() if bool(enabled))
+    )
+    side_data = raw.get("side_data_list")
     return MediaStream(
         index=index,
         kind=kind,
@@ -265,8 +294,10 @@ def _parse_stream(raw: Any) -> MediaStream:
         frame_rate=_frame_rate(raw.get("avg_frame_rate")),
         pixel_format=raw.get("pix_fmt"),
         color_space=raw.get("color_space"),
+        color_range=raw.get("color_range"),
         color_transfer=raw.get("color_transfer"),
         color_primaries=raw.get("color_primaries"),
+        chroma_location=raw.get("chroma_location"),
         sample_rate=_optional_int(raw.get("sample_rate")),
         channels=_optional_int(raw.get("channels")),
         channel_layout=raw.get("channel_layout"),
@@ -276,8 +307,22 @@ def _parse_stream(raw: Any) -> MediaStream:
         forced=bool(disposition.get("forced")),
         hearing_impaired=bool(disposition.get("hearing_impaired")),
         attached_picture=bool(disposition.get("attached_pic")),
-        dolby_vision=_dolby_vision(raw.get("side_data_list")),
+        dolby_vision=_dolby_vision(side_data),
+        start_time=_optional_float(raw.get("start_time")),
+        dispositions=dispositions,
+        video_side_data=_video_side_data(side_data, kind),
     )
+
+
+def _parse_chapter(raw: Any) -> MediaChapter:
+    if not isinstance(raw, dict):
+        raise MediaProbeError("ffprobe returned invalid chapter data")
+    start_time = _optional_float(raw.get("start_time"))
+    end_time = _optional_float(raw.get("end_time"))
+    if start_time is None or end_time is None:
+        raise MediaProbeError("ffprobe returned incomplete chapter data")
+    tags = raw.get("tags") if isinstance(raw.get("tags"), dict) else {}
+    return MediaChapter(start_time, end_time, tags.get("title"))
 
 
 def probe_media(path: Path) -> MediaInfo:
@@ -297,6 +342,7 @@ def probe_media(path: Path) -> MediaInfo:
         "error",
         "-show_format",
         "-show_streams",
+        "-show_chapters",
         "-of",
         "json",
         str(media_path),
@@ -328,8 +374,16 @@ def probe_media(path: Path) -> MediaInfo:
 
     raw_format = payload.get("format")
     raw_streams = payload.get("streams")
-    if not isinstance(raw_format, dict) or not isinstance(raw_streams, list):
+    raw_chapters = payload.get("chapters", [])
+    if (
+        not isinstance(raw_format, dict)
+        or not isinstance(raw_streams, list)
+        or not isinstance(raw_chapters, list)
+    ):
         raise MediaProbeError("ffprobe returned incomplete media data")
+    format_tags = (
+        raw_format.get("tags") if isinstance(raw_format.get("tags"), dict) else {}
+    )
 
     return MediaInfo(
         path=media_path,
@@ -338,4 +392,6 @@ def probe_media(path: Path) -> MediaInfo:
         size=_optional_int(raw_format.get("size")),
         bit_rate=_optional_int(raw_format.get("bit_rate")),
         streams=tuple(_parse_stream(stream) for stream in raw_streams),
+        title=format_tags.get("title"),
+        chapters=tuple(_parse_chapter(chapter) for chapter in raw_chapters),
     )

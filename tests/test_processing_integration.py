@@ -7,7 +7,12 @@ import pytest
 from dubgraft.config import ProcessingConfig
 from dubgraft.matching import TimelineAnalysis, TimelineKind
 from dubgraft.media import probe_media, select_audio_stream
-from dubgraft.processing import mux_drift_audio, mux_source_audio
+from dubgraft.processing import (
+    mux_drift_audio,
+    mux_source_audio,
+    validate_mux_compatibility,
+    validate_render_compatibility,
+)
 
 
 pytestmark = pytest.mark.skipif(
@@ -153,3 +158,184 @@ def test_synthetic_direct_static_and_drift_outputs(
         check=True,
         capture_output=True,
     )
+
+
+@pytest.mark.parametrize(
+    ("source_extension", "target_extension", "output_extension"),
+    [
+        ("mkv", "mkv", "mkv"),
+        ("mp4", "mp4", "mp4"),
+        ("mkv", "mp4", "mp4"),
+        ("mp4", "mkv", "mkv"),
+    ],
+)
+def test_container_matrix_preserves_track_metadata(
+    source_extension: str,
+    target_extension: str,
+    output_extension: str,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / f"source.{source_extension}"
+    target = tmp_path / f"target.{target_extension}"
+    output = tmp_path / f"output.{output_extension}"
+    metadata = tmp_path / "chapters.ffmeta"
+    metadata.write_text(
+        ";FFMETADATA1\ntitle=Target\n[CHAPTER]\nTIMEBASE=1/1000\n"
+        "START=0\nEND=500\ntitle=Opening\n",
+        encoding="utf-8",
+    )
+    run_ffmpeg(
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=880:sample_rate=48000:duration=1",
+        "-c:a",
+        "aac",
+        "-metadata:s:a:0",
+        "language=por",
+        "-metadata:s:a:0",
+        "title=Portuguese",
+        str(source),
+    )
+    run_ffmpeg(
+        "-f",
+        "lavfi",
+        "-i",
+        "color=size=16x16:rate=24:duration=1",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:sample_rate=48000:duration=1",
+        "-f",
+        "ffmetadata",
+        "-i",
+        str(metadata),
+        "-map",
+        "0:v",
+        "-map",
+        "1:a",
+        "-map_metadata",
+        "2",
+        "-map_chapters",
+        "2",
+        "-c:v",
+        "mpeg4",
+        "-c:a",
+        "aac",
+        "-metadata:s:a:0",
+        "language=eng",
+        "-metadata:s:a:0",
+        "title=English",
+        "-disposition:a:0",
+        "default",
+        str(target),
+    )
+    source_info = probe_media(source)
+    target_info = probe_media(target)
+    source_audio = select_audio_stream(source_info)
+    config = ProcessingConfig(source, target, output)
+
+    validate_mux_compatibility(config, target_info)
+    validate_render_compatibility(
+        config, target_info, source_audio, TimelineKind.DIRECT
+    )
+    validated = mux_source_audio(
+        config,
+        target_info,
+        source_audio,
+        offset=0,
+        source_duration=source_info.duration,
+    )
+
+    audios = [stream for stream in validated.streams if stream.kind == "audio"]
+    assert validated.title == "Target"
+    assert len(validated.chapters) == 1
+    assert validated.chapters[0].title == "Opening"
+    assert audios[0].language == "eng"
+    assert audios[0].title == "English"
+    assert audios[0].dispositions == ("default",)
+    assert audios[1].language == "por"
+    assert audios[1].title == "Portuguese"
+
+
+def test_mp4_cover_art_survives_mux(tmp_path: Path) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mp4"
+    output = tmp_path / "output.mp4"
+    cover = tmp_path / "cover.jpg"
+    metadata = tmp_path / "chapters.ffmeta"
+    metadata.write_text(
+        ";FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\n"
+        "START=0\nEND=500\ntitle=Opening\n",
+        encoding="utf-8",
+    )
+    run_ffmpeg(
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=blue:size=24x36",
+        "-frames:v",
+        "1",
+        str(cover),
+    )
+    run_ffmpeg(
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=880:sample_rate=48000:duration=1",
+        "-c:a",
+        "aac",
+        str(source),
+    )
+    run_ffmpeg(
+        "-f",
+        "lavfi",
+        "-i",
+        "color=size=16x16:rate=24:duration=1",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:sample_rate=48000:duration=1",
+        "-i",
+        str(cover),
+        "-f",
+        "ffmetadata",
+        "-i",
+        str(metadata),
+        "-map",
+        "0:v",
+        "-map",
+        "1:a",
+        "-map",
+        "2:v",
+        "-map_metadata",
+        "3",
+        "-map_chapters",
+        "3",
+        "-c:v:0",
+        "mpeg4",
+        "-c:a",
+        "aac",
+        "-c:v:1",
+        "mjpeg",
+        "-disposition:v:1",
+        "attached_pic",
+        str(target),
+    )
+    source_info = probe_media(source)
+    target_info = probe_media(target)
+    source_audio = select_audio_stream(source_info)
+    config = ProcessingConfig(source, target, output)
+
+    validated = mux_source_audio(
+        config,
+        target_info,
+        source_audio,
+        offset=0,
+        source_duration=source_info.duration,
+    )
+
+    covers = [stream for stream in validated.streams if stream.attached_picture]
+    assert len(covers) == 1
+    assert covers[0].codec == "mjpeg"
+    assert "attached_pic" in covers[0].dispositions

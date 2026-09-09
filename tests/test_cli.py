@@ -16,6 +16,8 @@ from dubgraft.report import ReportError
 @pytest.fixture
 def available_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("dubgraft.cli.validate_ffmpeg", lambda: None)
+    monkeypatch.setattr("dubgraft.cli.validate_mux_compatibility", lambda *args: None)
+    monkeypatch.setattr("dubgraft.cli.validate_render_compatibility", lambda *args: None)
 
     def render(
         config: ProcessingConfig,
@@ -739,6 +741,40 @@ def test_cli_selects_explicit_audio_stream_indices(
     )
 
 
+def test_cli_rejects_incompatible_output_before_analysis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+    monkeypatch.setattr("dubgraft.cli.validate_ffmpeg", lambda: None)
+    monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
+    monkeypatch.setattr(
+        "dubgraft.cli.validate_mux_compatibility",
+        lambda *args: (_ for _ in ()).throw(
+            ProcessingError("Output container cannot preserve every Target stream")
+        ),
+    )
+    analyzed = False
+
+    def analyze(*args: object, **kwargs: object) -> MatchingResult:
+        nonlocal analyzed
+        analyzed = True
+        return processing_result(TimelineKind.DIRECT)
+
+    monkeypatch.setattr("dubgraft.cli.analyze_media", analyze)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main([str(source), str(target), str(tmp_path / "output.mp4")])
+
+    assert exit_info.value.code == 1
+    assert analyzed is False
+    assert "cannot preserve every Target stream" in capsys.readouterr().err
+
+
 def test_cli_reports_inconclusive_timeline(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -841,6 +877,7 @@ def test_cli_writes_detailed_json_report(
     assert data["formulas"]["timeline"].startswith("source_time =")
     assert data["processing"]["rendered"] is False
     assert data["processing"]["output_validated"] is False
+    assert data["processing"]["target_streams_preserved"] is None
     assert data["processing"]["added_audio"] is None
 
 
@@ -953,6 +990,7 @@ def test_cli_writes_completed_processing_report(
     assert data["media"]["output"] == str(output.resolve())
     assert data["processing"]["rendered"] is True
     assert data["processing"]["output_validated"] is True
+    assert data["processing"]["target_streams_preserved"] == 1
     assert data["processing"]["requested_metadata_overrides"] == {
         "language": "por",
         "title": "Português Brasileiro",
@@ -1003,9 +1041,11 @@ def test_cli_preserves_analysis_report_when_rendering_fails(
     assert data["status"] == "processing_failed"
     assert data["error"] == "Atmos cannot be preserved"
     assert data["processing"]["output_validated"] is False
+    assert data["processing"]["target_streams_preserved"] is None
     assert data["processing"]["added_audio"] is None
     captured = capsys.readouterr()
     assert "Status: processing_failed" in captured.out
+    assert "Target streams preserved: not validated" in captured.out
     assert "Atmos cannot be preserved" in captured.err
 
 

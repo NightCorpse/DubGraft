@@ -2,7 +2,7 @@ import json
 import os
 import shutil
 import subprocess
-import sys
+import sysconfig
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,7 +38,7 @@ def run_ffmpeg(*arguments: str) -> None:
 
 def dubgraft_executable() -> Path:
     name = "dubgraft.exe" if os.name == "nt" else "dubgraft"
-    executable = Path(sys.executable).with_name(name)
+    executable = Path(sysconfig.get_path("scripts")) / name
     if not executable.is_file():
         pytest.fail(f"installed DubGraft entry point was not found: {executable}")
     return executable

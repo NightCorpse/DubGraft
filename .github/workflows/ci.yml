@@ -106,6 +106,15 @@ jobs:
       - name: Build distributions
         run: python -m build
 
+      - name: Verify wheel installation
+        env:
+          WHEEL_VENV: ${{ runner.temp }}/dubgraft-wheel
+        run: |
+          python -m venv "$WHEEL_VENV"
+          "$WHEEL_VENV/bin/python" -m pip install dist/*.whl
+          env -u PYTHONPATH "$WHEEL_VENV/bin/dubgraft" --version
+          env -u PYTHONPATH "$WHEEL_VENV/bin/python" -c 'import sys; from importlib.metadata import version; from pathlib import Path; import dubgraft; assert dubgraft.__version__ == version("dubgraft"); assert Path(dubgraft.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())'
+
       - name: Upload distributions
         uses: actions/upload-artifact@v5
         with:

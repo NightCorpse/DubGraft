@@ -55,6 +55,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 addopts = "-ra --cov=dubgraft --cov-report=term-missing"
 testpaths = ["tests"]
+markers = [
+  "e2e: exercises the installed CLI with real FFmpeg processes",
+]
 
 [tool.coverage.run]
 branch = true

@@ -202,6 +202,10 @@ def _optional_int(value: Any) -> int | None:
         return None
 
 
+def _dictionary(value: Any) -> dict[Any, Any]:
+    return value if isinstance(value, dict) else {}
+
+
 def _optional_float(value: Any) -> float | None:
     try:
         return float(value) if value is not None else None
@@ -255,10 +259,8 @@ def _parse_stream(raw: Any) -> MediaStream:
     except (KeyError, TypeError, ValueError) as error:
         raise MediaProbeError("ffprobe returned incomplete stream data") from error
 
-    tags = raw.get("tags") if isinstance(raw.get("tags"), dict) else {}
-    disposition = (
-        raw.get("disposition") if isinstance(raw.get("disposition"), dict) else {}
-    )
+    tags = _dictionary(raw.get("tags"))
+    disposition = _dictionary(raw.get("disposition"))
     dispositions = tuple(
         sorted(name for name, enabled in disposition.items() if bool(enabled))
     )
@@ -303,7 +305,7 @@ def _parse_chapter(raw: Any) -> MediaChapter:
     end_time = _optional_float(raw.get("end_time"))
     if start_time is None or end_time is None:
         raise MediaProbeError("ffprobe returned incomplete chapter data")
-    tags = raw.get("tags") if isinstance(raw.get("tags"), dict) else {}
+    tags = _dictionary(raw.get("tags"))
     return MediaChapter(start_time, end_time, tags.get("title"))
 
 
@@ -353,9 +355,7 @@ def probe_media(path: Path) -> MediaInfo:
         or not isinstance(raw_chapters, list)
     ):
         raise MediaProbeError("ffprobe returned incomplete media data")
-    format_tags = (
-        raw_format.get("tags") if isinstance(raw_format.get("tags"), dict) else {}
-    )
+    format_tags = _dictionary(raw_format.get("tags"))
 
     return MediaInfo(
         path=media_path,

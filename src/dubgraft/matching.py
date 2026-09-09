@@ -174,7 +174,7 @@ def select_distributed_anchors(
     if not math.isfinite(minimum_distance) or minimum_distance < 0:
         raise ValueError("minimum anchor distance must be finite and non-negative")
 
-    selected = []
+    selected: list[AudioMatch] = []
     for candidate in sorted(candidates, key=lambda item: item.confidence, reverse=True):
         if all(
             abs(candidate.target_time - anchor.target_time) > minimum_distance
@@ -277,15 +277,23 @@ def analyze_timeline(
         (np.max(fit_target_times) - np.min(fit_target_times)) / target_duration
     )
 
-    slope, intercept = np.polyfit(fit_target_times, fit_source_times, 1)
+    coefficients = np.polyfit(fit_target_times, fit_source_times, 1)
+    slope = float(coefficients[0])
+    intercept = float(coefficients[1])
     predicted = slope * fit_target_times + intercept
     residuals = fit_source_times - predicted
     rms_residual = float(np.sqrt(np.mean(np.square(residuals))))
     maximum_residual = float(np.max(np.abs(residuals)))
     drift_over_duration = float((slope - 1.0) * target_duration)
 
-    values = (slope, intercept, rms_residual, maximum_residual, drift_over_duration)
-    if not all(math.isfinite(float(value)) for value in values):
+    regression_values = (
+        slope,
+        intercept,
+        rms_residual,
+        maximum_residual,
+        drift_over_duration,
+    )
+    if not all(math.isfinite(value) for value in regression_values):
         raise ValueError("timeline regression produced non-finite values")
 
     predicted_source_end = float(slope * target_duration + intercept)

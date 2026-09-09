@@ -19,7 +19,7 @@ class LanguageCodeError(ValueError):
 def _language_codes() -> dict[str, str]:
     path = files("dubgraft").joinpath("data", "iso-639-2.csv")
     codes: dict[str, str] = {}
-    with path.open(encoding="utf-8", newline="") as language_file:
+    with path.open(encoding="utf-8") as language_file:
         for row in csv.DictReader(language_file):
             canonical = row["iso_639_2_b"]
             if "-" in canonical:

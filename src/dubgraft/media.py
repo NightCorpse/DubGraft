@@ -1,11 +1,7 @@
 """Media metadata probing through FFprobe."""
 
 import json
-import logging
 import math
-import shlex
-import shutil
-import subprocess
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -15,9 +11,13 @@ import numpy as np
 from numpy.typing import NDArray
 
 from dubgraft.config import ANALYSIS_SAMPLE_RATE
-
-
-logger = logging.getLogger(__name__)
+from dubgraft.execution import (
+    CommandExitError,
+    CommandLaunchError,
+    ExecutableNotFoundError,
+    resolve_executable,
+    run_capture,
+)
 
 
 class MediaProbeError(RuntimeError):
@@ -97,10 +97,10 @@ class FFmpegInfo:
 
 
 def _ffmpeg_executable() -> str:
-    ffmpeg = shutil.which("ffmpeg")
-    if ffmpeg is None:
-        raise FFmpegError("ffmpeg was not found in PATH")
-    return ffmpeg
+    try:
+        return resolve_executable("ffmpeg")
+    except ExecutableNotFoundError as error:
+        raise FFmpegError(str(error)) from error
 
 
 def validate_ffmpeg() -> FFmpegInfo:
@@ -108,23 +108,12 @@ def validate_ffmpeg() -> FFmpegInfo:
     ffmpeg = _ffmpeg_executable()
 
     command = [ffmpeg, "-version"]
-    logger.debug("Running command: %s", shlex.join(command))
     try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
+        result = run_capture(command, timeout=10)
+    except CommandExitError as error:
+        raise FFmpegError(str(error)) from error
+    except CommandLaunchError as error:
         raise FFmpegError(f"could not execute ffmpeg: {error}") from error
-
-    if result.returncode != 0:
-        detail = result.stderr.strip() or f"ffmpeg exited with code {result.returncode}"
-        raise FFmpegError(detail)
     first_line = result.stdout.splitlines()
     if not first_line:
         raise FFmpegError("ffmpeg returned no version information")
@@ -166,21 +155,12 @@ def extract_audio_window(
         str(ANALYSIS_SAMPLE_RATE),
         "pipe:1",
     ]
-    logger.debug("Running command: %s", shlex.join(command))
     try:
-        result = subprocess.run(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            timeout=60,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
+        result = run_capture(command, timeout=60, text=False)
+    except CommandExitError as error:
+        raise FFmpegError(str(error)) from error
+    except CommandLaunchError as error:
         raise FFmpegError(f"could not extract audio with ffmpeg: {error}") from error
-
-    if result.returncode != 0:
-        detail = result.stderr.decode("utf-8", errors="replace").strip()
-        raise FFmpegError(detail or f"ffmpeg exited with code {result.returncode}")
     if not result.stdout:
         return np.array([], dtype=np.float32)
     if len(result.stdout) % np.dtype(np.int16).itemsize:
@@ -332,9 +312,10 @@ def probe_media(path: Path) -> MediaInfo:
     if not media_path.is_file():
         raise MediaProbeError(f"Media path is not a file: {media_path}")
 
-    ffprobe = shutil.which("ffprobe")
-    if ffprobe is None:
-        raise MediaProbeError("ffprobe was not found in PATH")
+    try:
+        ffprobe = resolve_executable("ffprobe")
+    except ExecutableNotFoundError as error:
+        raise MediaProbeError(str(error)) from error
 
     command = [
         ffprobe,
@@ -347,23 +328,12 @@ def probe_media(path: Path) -> MediaInfo:
         "json",
         str(media_path),
     ]
-    logger.debug("Running command: %s", shlex.join(command))
     try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            timeout=60,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
+        result = run_capture(command, timeout=60)
+    except CommandExitError as error:
+        raise MediaProbeError(str(error)) from error
+    except CommandLaunchError as error:
         raise MediaProbeError(f"could not execute ffprobe: {error}") from error
-
-    if result.returncode != 0:
-        detail = result.stderr.strip() or f"ffprobe exited with code {result.returncode}"
-        raise MediaProbeError(detail)
 
     try:
         payload = json.loads(result.stdout)

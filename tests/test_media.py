@@ -33,13 +33,13 @@ def media_info(*streams: MediaStream) -> MediaInfo:
 
 def test_validate_ffmpeg_reads_version(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[list[str], dict[str, object]]] = []
-    monkeypatch.setattr("dubgraft.media.shutil.which", lambda name: "/bin/ffmpeg")
+    monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         calls.append((command, kwargs))
         return subprocess.CompletedProcess(command, 0, "ffmpeg version 9.0\n", "")
 
-    monkeypatch.setattr("dubgraft.media.subprocess.run", fake_run)
+    monkeypatch.setattr("dubgraft.execution.subprocess.run", fake_run)
 
     assert validate_ffmpeg() == FFmpegInfo(Path("/bin/ffmpeg"), "ffmpeg version 9.0")
     command, options = calls[0]
@@ -50,7 +50,7 @@ def test_validate_ffmpeg_reads_version(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_validate_ffmpeg_requires_executable(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("dubgraft.media.shutil.which", lambda name: None)
+    monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: None)
 
     with pytest.raises(FFmpegError, match="ffmpeg was not found in PATH"):
         validate_ffmpeg()
@@ -68,8 +68,8 @@ def test_validate_ffmpeg_rejects_invalid_response(
     message: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("dubgraft.media.shutil.which", lambda name: "/bin/ffmpeg")
-    monkeypatch.setattr("dubgraft.media.subprocess.run", lambda *args, **kwargs: result)
+    monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
+    monkeypatch.setattr("dubgraft.execution.subprocess.run", lambda *args, **kwargs: result)
 
     with pytest.raises(FFmpegError, match=message):
         validate_ffmpeg()
@@ -82,13 +82,13 @@ def test_extract_audio_window_reads_selected_stream_as_normalized_mono_pcm(
     media.touch()
     pcm = np.array([-32768, 0, 16384, 32767], dtype=np.int16).tobytes()
     calls: list[tuple[list[str], dict[str, object]]] = []
-    monkeypatch.setattr("dubgraft.media.shutil.which", lambda name: "/bin/ffmpeg")
+    monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
         calls.append((command, kwargs))
         return subprocess.CompletedProcess(command, 0, pcm, b"")
 
-    monkeypatch.setattr("dubgraft.media.subprocess.run", fake_run)
+    monkeypatch.setattr("dubgraft.execution.subprocess.run", fake_run)
 
     samples = extract_audio_window(media, 3, 12.5, 6)
 
@@ -108,9 +108,9 @@ def test_extract_audio_window_reports_ffmpeg_failure(
 ) -> None:
     media = tmp_path / "broken.mkv"
     media.touch()
-    monkeypatch.setattr("dubgraft.media.shutil.which", lambda name: "/bin/ffmpeg")
+    monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
     monkeypatch.setattr(
-        "dubgraft.media.subprocess.run",
+        "dubgraft.execution.subprocess.run",
         lambda *args, **kwargs: subprocess.CompletedProcess(
             args[0], 1, b"", b"invalid audio stream"
         ),
@@ -125,9 +125,9 @@ def test_extract_audio_window_returns_empty_samples_after_media_end(
 ) -> None:
     media = tmp_path / "episode.mkv"
     media.touch()
-    monkeypatch.setattr("dubgraft.media.shutil.which", lambda name: "/bin/ffmpeg")
+    monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
     monkeypatch.setattr(
-        "dubgraft.media.subprocess.run",
+        "dubgraft.execution.subprocess.run",
         lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, b"", b""),
     )
 
@@ -238,13 +238,13 @@ def test_probe_media_reads_ffprobe_json(
     }
     calls: list[tuple[list[str], dict[str, object]]] = []
 
-    monkeypatch.setattr("dubgraft.media.shutil.which", lambda name: "/bin/ffprobe")
+    monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffprobe")
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         calls.append((command, kwargs))
         return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
 
-    monkeypatch.setattr("dubgraft.media.subprocess.run", fake_run)
+    monkeypatch.setattr("dubgraft.execution.subprocess.run", fake_run)
 
     info = probe_media(media)
 
@@ -273,7 +273,7 @@ def test_probe_media_requires_ffprobe(
 ) -> None:
     media = tmp_path / "episode.mkv"
     media.touch()
-    monkeypatch.setattr("dubgraft.media.shutil.which", lambda name: None)
+    monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: None)
 
     with pytest.raises(MediaProbeError, match="ffprobe was not found in PATH"):
         probe_media(media)
@@ -284,9 +284,9 @@ def test_probe_media_reports_ffprobe_failure(
 ) -> None:
     media = tmp_path / "broken.mkv"
     media.touch()
-    monkeypatch.setattr("dubgraft.media.shutil.which", lambda name: "/bin/ffprobe")
+    monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffprobe")
     monkeypatch.setattr(
-        "dubgraft.media.subprocess.run",
+        "dubgraft.execution.subprocess.run",
         lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, "", "Invalid data"),
     )
 
@@ -299,9 +299,9 @@ def test_probe_media_rejects_invalid_json(
 ) -> None:
     media = tmp_path / "broken.mkv"
     media.touch()
-    monkeypatch.setattr("dubgraft.media.shutil.which", lambda name: "/bin/ffprobe")
+    monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffprobe")
     monkeypatch.setattr(
-        "dubgraft.media.subprocess.run",
+        "dubgraft.execution.subprocess.run",
         lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "not json", ""),
     )
 

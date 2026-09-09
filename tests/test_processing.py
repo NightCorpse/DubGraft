@@ -6,12 +6,12 @@ from pathlib import Path
 import pytest
 
 from dubgraft.config import ProcessingConfig
+from dubgraft.execution import iter_progress_times
 from dubgraft.matching import MatchingResult, TimelineAnalysis, TimelineKind
 from dubgraft.media import FFmpegError, MediaChapter, MediaInfo, MediaStream
 from dubgraft.processing import (
     InconclusiveTimelineError,
     ProcessingError,
-    _iter_progress_times,
     _run_ffmpeg,
     _validate_output,
     _validate_reconstructed_audio,
@@ -182,14 +182,14 @@ def test_mux_source_audio_preserves_target_and_applies_static_offset(
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
     commands: list[list[str]] = []
-    monkeypatch.setattr("dubgraft.processing.shutil.which", lambda name: "/bin/ffmpeg")
+    monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         commands.append(command)
         Path(command[-1]).touch()
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr("dubgraft.processing.subprocess.run", fake_run)
+    monkeypatch.setattr("dubgraft.execution.subprocess.run", fake_run)
     monkeypatch.setattr(
         "dubgraft.processing._validate_output",
         lambda path, *args, **kwargs: output_info(path, target_info, source_audio),
@@ -229,14 +229,14 @@ def test_mux_source_audio_overrides_metadata(
     config, _, target_info, source_audio, _ = processing_media
     config = replace(config, language="de", track_name="  German Dub  ")
     commands: list[list[str]] = []
-    monkeypatch.setattr("dubgraft.processing.shutil.which", lambda name: "/bin/ffmpeg")
+    monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         commands.append(command)
         Path(command[-1]).touch()
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr("dubgraft.processing.subprocess.run", fake_run)
+    monkeypatch.setattr("dubgraft.execution.subprocess.run", fake_run)
     monkeypatch.setattr(
         "dubgraft.processing._validate_output",
         lambda path, *args, **kwargs: output_info(
@@ -256,7 +256,7 @@ def test_mux_source_audio_rejects_unknown_language(
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
     config = replace(config, language="invalid")
-    monkeypatch.setattr("dubgraft.processing.shutil.which", lambda name: "/bin/ffmpeg")
+    monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
 
     with pytest.raises(ProcessingError, match="invalid language code"):
         mux_source_audio(config, target_info, source_audio, offset=0)
@@ -274,7 +274,7 @@ def test_mux_source_audio_rejects_invalid_track_name(
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
     config = replace(config, track_name=track_name)
-    monkeypatch.setattr("dubgraft.processing.shutil.which", lambda name: "/bin/ffmpeg")
+    monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
 
     with pytest.raises(ProcessingError, match=error):
         mux_source_audio(config, target_info, source_audio, offset=0)
@@ -291,7 +291,7 @@ def test_mux_source_audio_rejects_invalid_track_name(
 def test_progress_time_formats(timestamp: str, expected: float) -> None:
     lines = [f"{timestamp}\n", "progress=continue\n"]
 
-    assert list(_iter_progress_times(lines)) == [expected]
+    assert list(iter_progress_times(lines)) == [expected]
 
 
 def test_ffmpeg_progress_is_monotonic(
@@ -311,7 +311,7 @@ def test_ffmpeg_progress_is_monotonic(
         commands.append(command)
         return _FakeProcess(protocol, kwargs["stderr"])  # type: ignore[arg-type]
 
-    monkeypatch.setattr("dubgraft.processing.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("dubgraft.execution.subprocess.Popen", fake_popen)
 
     _run_ffmpeg(
         ["ffmpeg", "-v", "error", "output.mkv"],
@@ -328,7 +328,7 @@ def test_ffmpeg_progress_preserves_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "dubgraft.processing.subprocess.Popen",
+        "dubgraft.execution.subprocess.Popen",
         lambda *args, **kwargs: _FakeProcess(
             "progress=end\n",
             kwargs["stderr"],
@@ -359,7 +359,7 @@ def test_ffmpeg_progress_stops_on_interrupt(
         processes.append(process)
         return process
 
-    monkeypatch.setattr("dubgraft.processing.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("dubgraft.execution.subprocess.Popen", fake_popen)
 
     with pytest.raises(KeyboardInterrupt):
         _run_ffmpeg(
@@ -379,9 +379,9 @@ def test_mux_source_audio_keeps_existing_output_when_ffmpeg_fails(
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
     config.output.write_text("existing", encoding="utf-8")
-    monkeypatch.setattr("dubgraft.processing.shutil.which", lambda name: "/bin/ffmpeg")
+    monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
     monkeypatch.setattr(
-        "dubgraft.processing.subprocess.run",
+        "dubgraft.execution.subprocess.run",
         lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, "", "mux failed"),
     )
 
@@ -396,14 +396,14 @@ def test_mux_source_audio_does_not_publish_over_a_late_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
-    monkeypatch.setattr("dubgraft.processing.shutil.which", lambda name: "/bin/ffmpeg")
+    monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         Path(command[-1]).touch()
         config.output.write_text("late output", encoding="utf-8")
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr("dubgraft.processing.subprocess.run", fake_run)
+    monkeypatch.setattr("dubgraft.execution.subprocess.run", fake_run)
     monkeypatch.setattr(
         "dubgraft.processing._validate_output",
         lambda path, *args, **kwargs: output_info(path, target_info, source_audio),
@@ -427,14 +427,14 @@ def test_mux_drift_audio_retimes_only_the_new_audio_stream(
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
     commands: list[list[str]] = []
-    monkeypatch.setattr("dubgraft.processing.shutil.which", lambda name: "/bin/ffmpeg")
+    monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         commands.append(command)
         Path(command[-1]).touch()
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr("dubgraft.processing.subprocess.run", fake_run)
+    monkeypatch.setattr("dubgraft.execution.subprocess.run", fake_run)
     monkeypatch.setattr(
         "dubgraft.processing._validate_reconstructed_audio", lambda *args: None
     )
@@ -691,7 +691,7 @@ def test_mux_preflight_suggests_target_extension(
 ) -> None:
     config, _, target_info, _, _ = processing_media
     config = replace(config, output=config.output.with_suffix(".mp4"))
-    monkeypatch.setattr("dubgraft.processing.shutil.which", lambda name: "/bin/ffmpeg")
+    monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
     monkeypatch.setattr(
         "dubgraft.processing._run_ffmpeg",
         lambda *args, **kwargs: (_ for _ in ()).throw(FFmpegError("unsupported codec")),
@@ -711,7 +711,7 @@ def test_mux_preflight_preserves_mp4_dolby_vision(
     streams[0] = replace(streams[0], dolby_vision="Dolby Vision P5.0")
     target_info = replace(target_info, streams=tuple(streams))
     commands = []
-    monkeypatch.setattr("dubgraft.processing.shutil.which", lambda name: "/bin/ffmpeg")
+    monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
     monkeypatch.setattr(
         "dubgraft.processing._run_ffmpeg",
         lambda command, *args, **kwargs: commands.append(command),
@@ -727,13 +727,13 @@ def test_mux_does_not_publish_failed_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
-    monkeypatch.setattr("dubgraft.processing.shutil.which", lambda name: "/bin/ffmpeg")
+    monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         Path(command[-1]).touch()
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr("dubgraft.processing.subprocess.run", fake_run)
+    monkeypatch.setattr("dubgraft.execution.subprocess.run", fake_run)
     monkeypatch.setattr(
         "dubgraft.processing._validate_output",
         lambda *args, **kwargs: (_ for _ in ()).throw(

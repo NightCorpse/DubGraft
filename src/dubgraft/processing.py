@@ -3,11 +3,8 @@
 import logging
 import math
 import os
-import shlex
-import shutil
-import subprocess
 import tempfile
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Never
@@ -18,6 +15,14 @@ from dubgraft.config import (
     ProcessingConfig,
     TimelineConfig,
     normalize_track_name,
+)
+from dubgraft.execution import (
+    CommandExitError,
+    CommandLaunchError,
+    ExecutableNotFoundError,
+    resolve_executable,
+    run_capture,
+    run_ffmpeg_progress,
 )
 from dubgraft.languages import LanguageCodeError, normalize_language_code
 from dubgraft.matching import (
@@ -64,57 +69,11 @@ def _output_path(config: ProcessingConfig) -> Path:
     return config.output
 
 
-def _progress_time(values: dict[str, str]) -> float | None:
-    for key in ("out_time_us", "out_time_ms"):
-        try:
-            seconds = int(values[key]) / 1_000_000
-        except (KeyError, ValueError):
-            continue
-        if math.isfinite(seconds):
-            return seconds
-
+def _ffmpeg_executable() -> str:
     try:
-        hours, minutes, seconds_text = values["out_time"].split(":", 2)
-        seconds = int(hours) * 3600 + int(minutes) * 60 + float(seconds_text)
-    except (KeyError, ValueError):
-        return None
-    return seconds if math.isfinite(seconds) else None
-
-
-def _iter_progress_times(lines: Iterable[str]) -> Iterator[float]:
-    values: dict[str, str] = {}
-    for line in lines:
-        key, separator, value = line.strip().partition("=")
-        if not separator:
-            continue
-        values[key] = value
-        if key == "progress":
-            seconds = _progress_time(values)
-            if seconds is not None:
-                yield seconds
-            values.clear()
-
-
-def _stop_process(process: subprocess.Popen[str]) -> None:
-    if process.poll() is not None:
-        return
-    try:
-        process.terminate()
-    except OSError:
-        pass
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        try:
-            process.kill()
-        except OSError:
-            pass
-        try:
-            process.wait()
-        except OSError:
-            pass
-    except OSError:
-        pass
+        return resolve_executable("ffmpeg")
+    except ExecutableNotFoundError as error:
+        raise FFmpegError(str(error)) from error
 
 
 def _run_ffmpeg(
@@ -125,75 +84,28 @@ def _run_ffmpeg(
     progress: RenderProgress | None = None,
 ) -> None:
     if progress is not None and expected_duration is not None:
-        _run_ffmpeg_with_progress(command, operation, expected_duration, progress)
+        try:
+            run_ffmpeg_progress(
+                command,
+                expected_duration=expected_duration,
+                progress=lambda completed: progress(
+                    operation, completed, expected_duration
+                ),
+            )
+        except CommandExitError as error:
+            raise FFmpegError(str(error)) from error
+        except CommandLaunchError as error:
+            raise FFmpegError(
+                f"could not execute ffmpeg {operation}: {error}"
+            ) from error
         return
 
-    logger.debug("Running command: %s", shlex.join(command))
     try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
-    except OSError as error:
+        run_capture(command)
+    except CommandExitError as error:
+        raise FFmpegError(str(error)) from error
+    except CommandLaunchError as error:
         raise FFmpegError(f"could not execute ffmpeg {operation}: {error}") from error
-    if result.returncode != 0:
-        detail = result.stderr.strip() or f"ffmpeg exited with code {result.returncode}"
-        raise FFmpegError(detail)
-
-
-def _run_ffmpeg_with_progress(
-    command: list[str],
-    operation: str,
-    expected_duration: float,
-    progress: RenderProgress,
-) -> None:
-    progress_command = [
-        command[0],
-        "-nostats",
-        "-progress",
-        "pipe:1",
-        *command[1:],
-    ]
-    logger.debug("Running command: %s", shlex.join(progress_command))
-    try:
-        with tempfile.TemporaryFile(
-            mode="w+", encoding="utf-8", errors="replace"
-        ) as diagnostics:
-            process = subprocess.Popen(
-                progress_command,
-                stdout=subprocess.PIPE,
-                stderr=diagnostics,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-            assert process.stdout is not None
-            completed = 0.0
-            try:
-                for seconds in _iter_progress_times(process.stdout):
-                    current = min(max(seconds, completed, 0.0), expected_duration * 0.99)
-                    if current > completed:
-                        completed = current
-                        progress(operation, completed, expected_duration)
-                return_code = process.wait()
-            except BaseException:
-                _stop_process(process)
-                raise
-            finally:
-                process.stdout.close()
-
-            diagnostics.seek(0)
-            detail = diagnostics.read().strip()
-    except OSError as error:
-        raise FFmpegError(f"could not execute ffmpeg {operation}: {error}") from error
-
-    if return_code != 0:
-        raise FFmpegError(detail or f"ffmpeg exited with code {return_code}")
-    progress(operation, expected_duration, expected_duration)
 
 
 def _publish_output(temporary_output: Path, config: ProcessingConfig) -> None:
@@ -551,9 +463,7 @@ def validate_mux_compatibility(
 ) -> None:
     """Check that the requested container can copy every Target stream."""
     output = _output_path(config)
-    ffmpeg = shutil.which("ffmpeg")
-    if ffmpeg is None:
-        raise FFmpegError("ffmpeg was not found in PATH")
+    ffmpeg = _ffmpeg_executable()
     try:
         with tempfile.TemporaryDirectory(
             prefix=".dubgraft-preflight-", dir=output.parent
@@ -609,9 +519,7 @@ def validate_render_compatibility(
 ) -> None:
     """Check the selected audio strategy against the requested container."""
     output = _output_path(config)
-    ffmpeg = shutil.which("ffmpeg")
-    if ffmpeg is None:
-        raise FFmpegError("ffmpeg was not found in PATH")
+    ffmpeg = _ffmpeg_executable()
     try:
         with tempfile.TemporaryDirectory(
             prefix=".dubgraft-audio-preflight-", dir=output.parent
@@ -706,9 +614,7 @@ def mux_source_audio(
     progress: RenderProgress | None = None,
 ) -> MediaInfo:
     """Copy the Target and append one Source audio stream at a static offset."""
-    ffmpeg = shutil.which("ffmpeg")
-    if ffmpeg is None:
-        raise FFmpegError("ffmpeg was not found in PATH")
+    ffmpeg = _ffmpeg_executable()
     target_duration = _target_duration(target_info)
     output = _output_path(config)
     try:
@@ -879,9 +785,7 @@ def mux_drift_audio(
             "to avoid downmix"
         )
 
-    ffmpeg = shutil.which("ffmpeg")
-    if ffmpeg is None:
-        raise FFmpegError("ffmpeg was not found in PATH")
+    ffmpeg = _ffmpeg_executable()
 
     trim_start = max(intercept, 0.0)
     delay = max(-intercept / slope, 0.0)

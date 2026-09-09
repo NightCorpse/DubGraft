@@ -13,6 +13,7 @@ from dubgraft.media import (
     MediaInfo,
     MediaProbeError,
     MediaStream,
+    _stream_title,
     extract_audio_window,
     probe_media,
     select_audio_stream,
@@ -29,6 +30,22 @@ def media_info(*streams: MediaStream) -> MediaInfo:
         bit_rate=None,
         streams=streams,
     )
+
+
+@pytest.mark.parametrize(
+    ("tags", "expected"),
+    [
+        ({"title": "English"}, "English"),
+        ({"name": "English"}, "English"),
+        ({"handler_name": "English"}, "English"),
+        ({"handler_name": "SoundHandler"}, None),
+        ({"handler_name": "VideoHandler"}, None),
+    ],
+)
+def test_stream_title_reads_explicit_metadata(
+    tags: dict[str, str], expected: str | None
+) -> None:
+    assert _stream_title(tags) == expected
 
 
 def test_validate_ffmpeg_reads_version(monkeypatch: pytest.MonkeyPatch) -> None:

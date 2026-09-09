@@ -206,6 +206,25 @@ def _dictionary(value: Any) -> dict[Any, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _stream_title(tags: dict[Any, Any]) -> str | None:
+    for key in ("title", "name"):
+        value = tags.get(key)
+        if isinstance(value, str) and value:
+            return value
+
+    handler_name = tags.get("handler_name")
+    if not isinstance(handler_name, str) or not handler_name:
+        return None
+    if handler_name.casefold() in {
+        "datahandler",
+        "soundhandler",
+        "subtitlehandler",
+        "videohandler",
+    }:
+        return None
+    return handler_name
+
+
 def _optional_float(value: Any) -> float | None:
     try:
         return float(value) if value is not None else None
@@ -285,7 +304,7 @@ def _parse_stream(raw: Any) -> MediaStream:
         channels=_optional_int(raw.get("channels")),
         channel_layout=raw.get("channel_layout"),
         language=tags.get("language"),
-        title=tags.get("title") or tags.get("name"),
+        title=_stream_title(tags),
         default=bool(disposition.get("default")),
         forced=bool(disposition.get("forced")),
         hearing_impaired=bool(disposition.get("hearing_impaired")),

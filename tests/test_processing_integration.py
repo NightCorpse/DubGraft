@@ -201,7 +201,7 @@ def test_container_matrix_preserves_track_metadata(
         "-metadata:s:a:0",
         "language=por",
         "-metadata:s:a:0",
-        "title=Portuguese",
+        f"{'handler_name' if source_extension == 'mp4' else 'title'}=Portuguese",
         str(source),
     )
     run_ffmpeg(
@@ -232,7 +232,7 @@ def test_container_matrix_preserves_track_metadata(
         "-metadata:s:a:0",
         "language=eng",
         "-metadata:s:a:0",
-        "title=English",
+        f"{'handler_name' if target_extension == 'mp4' else 'title'}=English",
         "-disposition:a:0",
         "default",
         str(target),

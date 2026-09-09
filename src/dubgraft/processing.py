@@ -237,6 +237,7 @@ def _audio_metadata_arguments(
     config: ProcessingConfig,
     target_info: MediaInfo,
     source_audio: MediaStream,
+    output: Path,
 ) -> list[str]:
     audio_index = sum(stream.kind == "audio" for stream in target_info.streams)
     arguments = []
@@ -245,6 +246,8 @@ def _audio_metadata_arguments(
         arguments.extend([f"-metadata:s:a:{audio_index}", f"language={language}"])
     if title:
         arguments.extend([f"-metadata:s:a:{audio_index}", f"title={title}"])
+        if output.suffix.casefold() in {".mp4", ".m4v", ".mov"}:
+            arguments.extend([f"-metadata:s:a:{audio_index}", f"handler_name={title}"])
     arguments.extend(
         [
             f"-disposition:a:{audio_index}",
@@ -254,7 +257,9 @@ def _audio_metadata_arguments(
     return arguments
 
 
-def _target_stream_metadata_arguments(target_info: MediaInfo) -> list[str]:
+def _target_stream_metadata_arguments(
+    target_info: MediaInfo, output: Path
+) -> list[str]:
     arguments = []
     video_index = 0
     for position, stream in enumerate(target_info.streams):
@@ -262,6 +267,10 @@ def _target_stream_metadata_arguments(target_info: MediaInfo) -> list[str]:
             arguments.extend([f"-metadata:s:{position}", f"language={stream.language}"])
         if stream.title:
             arguments.extend([f"-metadata:s:{position}", f"title={stream.title}"])
+            if output.suffix.casefold() in {".mp4", ".m4v", ".mov"}:
+                arguments.extend(
+                    [f"-metadata:s:{position}", f"handler_name={stream.title}"]
+                )
         arguments.extend(
             [f"-disposition:{position}", "+".join(stream.dispositions) or "0"]
         )
@@ -583,7 +592,9 @@ def validate_mux_compatibility(
                 "-t",
                 "0.1",
             ]
-            command.extend(_target_stream_metadata_arguments(target_info))
+            command.extend(
+                _target_stream_metadata_arguments(target_info, temporary_output)
+            )
             command.extend(
                 _container_preservation_arguments(temporary_output, target_info)
             )
@@ -658,8 +669,14 @@ def validate_render_compatibility(
                     stream.kind == "audio" for stream in target_info.streams
                 )
                 command.extend([f"-c:a:{audio_index}", "eac3", "-b:a", "640k"])
-            command.extend(_target_stream_metadata_arguments(target_info))
-            command.extend(_audio_metadata_arguments(config, target_info, source_audio))
+            command.extend(
+                _target_stream_metadata_arguments(target_info, temporary_output)
+            )
+            command.extend(
+                _audio_metadata_arguments(
+                    config, target_info, source_audio, temporary_output
+                )
+            )
             command.extend(
                 _container_preservation_arguments(temporary_output, target_info)
             )
@@ -789,8 +806,14 @@ def mux_source_audio(
                     "disabled",
                 ]
             )
-            command.extend(_target_stream_metadata_arguments(target_info))
-            command.extend(_audio_metadata_arguments(config, target_info, source_audio))
+            command.extend(
+                _target_stream_metadata_arguments(target_info, temporary_output)
+            )
+            command.extend(
+                _audio_metadata_arguments(
+                    config, target_info, source_audio, temporary_output
+                )
+            )
             command.extend(
                 _container_preservation_arguments(temporary_output, target_info)
             )
@@ -949,8 +972,14 @@ def mux_drift_audio(
                 "-avoid_negative_ts",
                 "disabled",
             ]
-            command.extend(_target_stream_metadata_arguments(target_info))
-            command.extend(_audio_metadata_arguments(config, target_info, source_audio))
+            command.extend(
+                _target_stream_metadata_arguments(target_info, temporary_output)
+            )
+            command.extend(
+                _audio_metadata_arguments(
+                    config, target_info, source_audio, temporary_output
+                )
+            )
             command.extend(
                 _container_preservation_arguments(temporary_output, target_info)
             )

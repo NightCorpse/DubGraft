@@ -12,7 +12,9 @@ from dubgraft.media import FFmpegError, MediaChapter, MediaInfo, MediaStream
 from dubgraft.processing import (
     InconclusiveTimelineError,
     ProcessingError,
+    _audio_metadata_arguments,
     _run_ffmpeg,
+    _target_stream_metadata_arguments,
     _validate_output,
     _validate_reconstructed_audio,
     mux_drift_audio,
@@ -166,6 +168,28 @@ def output_info(
         (*target_info.streams, added_audio),
         target_info.title,
         target_info.chapters,
+    )
+
+
+def test_mp4_title_metadata_uses_handler_names(
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+    assert config.output is not None
+
+    mp4_output = config.output.with_suffix(".mp4")
+    arguments = _target_stream_metadata_arguments(target_info, mp4_output)
+    arguments.extend(
+        _audio_metadata_arguments(config, target_info, source_audio, mp4_output)
+    )
+
+    assert "handler_name=English" in arguments
+    assert "handler_name=Brazilian Portuguese" in arguments
+    assert not any(
+        argument.startswith("handler_name=")
+        for argument in _target_stream_metadata_arguments(target_info, config.output)
     )
 
 

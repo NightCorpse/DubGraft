@@ -45,6 +45,54 @@ from dubgraft.media import (
 logger = logging.getLogger(__name__)
 RenderProgress = Callable[[str, float, float], None]
 
+_LOSSLESS_AUDIO_CODECS = frozenset(
+    {
+        "alac",
+        "ape",
+        "flac",
+        "mlp",
+        "mp4als",
+        "ralf",
+        "shorten",
+        "tak",
+        "truehd",
+        "tta",
+        "wavpack",
+    }
+)
+_CONVENTIONAL_LOSSY_AUDIO_CODECS = frozenset(
+    {
+        "aac",
+        "aac_latm",
+        "ac3",
+        "dts",
+        "eac3",
+        "mp1",
+        "mp2",
+        "mp3",
+        "opus",
+        "vorbis",
+        "wmav1",
+        "wmav2",
+        "wmapro",
+    }
+)
+_OBJECT_AUDIO_CODECS = frozenset({"ac4", "iamf", "mpegh_3d_audio"})
+_OBJECT_AUDIO_MARKERS = (
+    "atmos",
+    "dolby joc",
+    "dts:x",
+    "dtsx",
+    "iamf",
+    "immersive audio",
+    "joint object coding",
+    "mpeg-h",
+    "mpegh",
+    "object audio",
+    "object-based",
+)
+_LOSSLESS_PROFILE_MARKERS = ("dts-hd ma", "master audio", "lossless")
+
 
 class ProcessingError(RuntimeError):
     """Raised when a valid processing request cannot produce an output."""
@@ -61,6 +109,55 @@ class InconclusiveTimelineError(ProcessingError):
         self.result = result
         self.analysis = analysis
         super().__init__(analysis.reason or "timeline analysis was inconclusive")
+
+
+def _validate_drift_audio_safety(source_audio: MediaStream) -> None:
+    codec = source_audio.codec.strip().casefold()
+    profile = (source_audio.profile or "").casefold()
+    description = " ".join(
+        value
+        for value in (
+            source_audio.profile,
+            source_audio.title,
+            *source_audio.audio_side_data,
+        )
+        if value
+    ).casefold()
+
+    is_lossless = (
+        codec in _LOSSLESS_AUDIO_CODECS
+        or codec.startswith(("pcm_", "dsd_"))
+        or (
+            codec == "dts"
+            and any(marker in description for marker in _LOSSLESS_PROFILE_MARKERS)
+        )
+    )
+    if is_lossless:
+        if codec == "truehd":
+            raise ProcessingError(
+                "selected Source audio uses TrueHD; the E-AC-3 drift path cannot "
+                "preserve its lossless encoding or reliably preserve possible Atmos "
+                "metadata; no output was created"
+            )
+        raise ProcessingError(
+            f"selected Source audio uses lossless codec {source_audio.codec}; "
+            "the E-AC-3 drift path would convert it to lossy audio; no output was "
+            "created"
+        )
+    if (
+        codec in _OBJECT_AUDIO_CODECS
+        or "joc" in profile
+        or any(marker in description for marker in _OBJECT_AUDIO_MARKERS)
+    ):
+        raise ProcessingError(
+            "selected Source audio contains object-based or immersive metadata; "
+            "drift requires re-encoding and would discard it; no output was created"
+        )
+    if codec not in _CONVENTIONAL_LOSSY_AUDIO_CODECS:
+        raise ProcessingError(
+            f"selected Source audio codec {source_audio.codec!r} is not classified "
+            "as conventional lossy channel-based audio; no output was created"
+        )
 
 
 def _output_path(config: ProcessingConfig) -> Path:
@@ -749,20 +846,7 @@ def mux_drift_audio(
         or slope <= 0
     ):
         raise ProcessingError("drift timeline has an invalid linear model")
-    atmos_description = " ".join(
-        value for value in (source_audio.profile, source_audio.title) if value
-    )
-    if source_audio.codec.casefold() == "truehd":
-        raise ProcessingError(
-            "selected Source audio uses TrueHD; the E-AC-3 drift path cannot "
-            "preserve its lossless encoding or reliably preserve possible Atmos "
-            "metadata; no output was created"
-        )
-    if "atmos" in atmos_description.casefold():
-        raise ProcessingError(
-            "selected Source audio contains Dolby Atmos metadata; drift requires "
-            "re-encoding and would discard Atmos; no output was created"
-        )
+    _validate_drift_audio_safety(source_audio)
     if source_audio.channels is None:
         raise ProcessingError(
             "could not determine the selected Source audio channel count; no output "

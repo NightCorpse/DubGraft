@@ -181,6 +181,7 @@ def test_mux_source_audio_preserves_target_and_applies_static_offset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
+    source_audio = replace(source_audio, codec="flac")
     commands: list[list[str]] = []
     monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
 
@@ -763,18 +764,22 @@ def test_mux_drift_audio_rejects_unsupported_channel_count(
         )
 
 
+@pytest.mark.parametrize(
+    "profile", ["Dolby Digital Plus + Dolby Atmos", "E-AC-3 JOC"]
+)
 def test_mux_drift_audio_rejects_atmos_metadata_loss(
+    profile: str,
     processing_media: tuple[
         ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
     ],
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
 
-    with pytest.raises(ProcessingError, match="would discard Atmos"):
+    with pytest.raises(ProcessingError, match="would discard it"):
         mux_drift_audio(
             config,
             target_info,
-            replace(source_audio, profile="Dolby Digital Plus + Dolby Atmos"),
+            replace(source_audio, profile=profile),
             timeline(TimelineKind.DRIFT, slope=0.999),
         )
 
@@ -802,11 +807,98 @@ def test_mux_drift_audio_rejects_atmos_title_metadata_loss(
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
 
-    with pytest.raises(ProcessingError, match="would discard Atmos"):
+    with pytest.raises(ProcessingError, match="would discard it"):
         mux_drift_audio(
             config,
             target_info,
             replace(source_audio, profile=None, title="English Dolby Atmos"),
+            timeline(TimelineKind.DRIFT, slope=0.999),
+        )
+
+
+@pytest.mark.parametrize("codec", ["flac", "alac", "pcm_s24le", "wavpack"])
+def test_mux_drift_audio_rejects_lossless_conversion(
+    codec: str,
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+
+    with pytest.raises(ProcessingError, match="would convert it to lossy audio"):
+        mux_drift_audio(
+            config,
+            target_info,
+            replace(source_audio, codec=codec),
+            timeline(TimelineKind.DRIFT, slope=0.999),
+        )
+
+
+def test_mux_drift_audio_rejects_dts_hd_master_audio(
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+
+    with pytest.raises(ProcessingError, match="would convert it to lossy audio"):
+        mux_drift_audio(
+            config,
+            target_info,
+            replace(source_audio, codec="dts", profile="DTS-HD MA"),
+            timeline(TimelineKind.DRIFT, slope=0.999),
+        )
+
+
+@pytest.mark.parametrize("codec", ["ac4", "iamf", "mpegh_3d_audio"])
+def test_mux_drift_audio_rejects_object_audio_codec(
+    codec: str,
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+
+    with pytest.raises(ProcessingError, match="object-based or immersive"):
+        mux_drift_audio(
+            config,
+            target_info,
+            replace(source_audio, codec=codec),
+            timeline(TimelineKind.DRIFT, slope=0.999),
+        )
+
+
+def test_mux_drift_audio_rejects_object_audio_side_data(
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+
+    with pytest.raises(ProcessingError, match="object-based or immersive"):
+        mux_drift_audio(
+            config,
+            target_info,
+            replace(
+                source_audio,
+                audio_side_data=('{"side_data_type":"Dolby object audio metadata"}',),
+            ),
+            timeline(TimelineKind.DRIFT, slope=0.999),
+        )
+
+
+def test_mux_drift_audio_rejects_unclassified_codec(
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+
+    with pytest.raises(ProcessingError, match="not classified as conventional lossy"):
+        mux_drift_audio(
+            config,
+            target_info,
+            replace(source_audio, codec="unknown"),
             timeline(TimelineKind.DRIFT, slope=0.999),
         )
 

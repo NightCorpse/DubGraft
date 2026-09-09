@@ -68,6 +68,7 @@ class MediaStream:
     start_time: float | None = None
     dispositions: tuple[str, ...] = ()
     video_side_data: tuple[str, ...] = ()
+    audio_side_data: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,8 +236,10 @@ def _dolby_vision(side_data: Any) -> str | None:
     return None
 
 
-def _video_side_data(raw: Any, kind: str) -> tuple[str, ...]:
-    if kind != "video" or not isinstance(raw, list):
+def _stream_side_data(
+    raw: Any, kind: str, expected_kind: str
+) -> tuple[str, ...]:
+    if kind != expected_kind or not isinstance(raw, list):
         return ()
     return tuple(
         json.dumps(entry, sort_keys=True, separators=(",", ":"))
@@ -290,7 +293,8 @@ def _parse_stream(raw: Any) -> MediaStream:
         dolby_vision=_dolby_vision(side_data),
         start_time=_optional_float(raw.get("start_time")),
         dispositions=dispositions,
-        video_side_data=_video_side_data(side_data, kind),
+        video_side_data=_stream_side_data(side_data, kind, "video"),
+        audio_side_data=_stream_side_data(side_data, kind, "audio"),
     )
 
 

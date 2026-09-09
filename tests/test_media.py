@@ -218,6 +218,9 @@ def test_probe_media_reads_ffprobe_json(
                 "channel_layout": "5.1(side)",
                 "bit_rate": "640000",
                 "tags": {"language": "eng", "name": "English"},
+                "side_data_list": [
+                    {"side_data_type": "Dolby object audio metadata"}
+                ],
             },
             {"index": 2, "codec_type": "subtitle", "codec_name": "subrip"},
             ],
@@ -260,6 +263,7 @@ def test_probe_media_reads_ffprobe_json(
     assert info.title == "Episode"
     assert info.chapters == (MediaChapter(0, 12.5, "Opening"),)
     assert info.streams[1].channels == 6
+    assert "Dolby object audio metadata" in info.streams[1].audio_side_data[0]
     command, options = calls[0]
     assert command[0] == "/bin/ffprobe"
     assert command[-1] == str(media.resolve())

@@ -43,7 +43,7 @@ jobs:
         run: python -m twine check --strict dist/*
 
       - name: Upload distributions
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: testpypi-distributions-${{ github.sha }}
           path: dist/
@@ -63,7 +63,7 @@ jobs:
 
     steps:
       - name: Download distributions
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           name: testpypi-distributions-${{ github.sha }}
           path: dist/

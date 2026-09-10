@@ -121,7 +121,7 @@ jobs:
           env -u PYTHONPATH "$WHEEL_VENV/bin/python" -I -c 'import sys; from importlib.metadata import version; from importlib.resources import files; from pathlib import Path; import dubgraft; assert dubgraft.__version__ == version("dubgraft"); assert Path(dubgraft.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()); assert files("dubgraft").joinpath("data/iso-639-2.csv").is_file()'
 
       - name: Upload distributions
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: distributions-${{ github.sha }}
           path: dist/

@@ -17,10 +17,10 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: Require develop branch
-        if: github.ref != 'refs/heads/develop'
+      - name: Require release branch
+        if: ${{ !startsWith(github.ref, 'refs/heads/release/') }}
         run: |
-          echo "::error::Run this workflow from the develop branch."
+          echo "::error::Run this workflow from a release/* branch."
           exit 1
 
       - name: Check out repository

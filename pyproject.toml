@@ -6,8 +6,11 @@ build-backend = "setuptools.build_meta"
 name = "dubgraft"
 dynamic = ["version"]
 description = "Align and graft dubbed audio across media releases using distributed audio anchors."
+readme = "README.md"
 requires-python = ">=3.11"
 license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+keywords = ["audio synchronization", "dubbed audio", "ffmpeg", "media"]
 authors = [
   { name = "NightCorpse" },
 ]
@@ -16,7 +19,7 @@ dependencies = [
   "scipy>=1.12,<2",
 ]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 3 - Alpha",
   "Environment :: Console",
   "Operating System :: Microsoft :: Windows",
   "Operating System :: POSIX :: Linux",
@@ -34,10 +37,16 @@ dev = [
   "pytest-cov>=6,<8",
   "ruff>=0.11,<1",
   "scipy-stubs>=1.12,<2",
+  "twine>=6,<7",
 ]
 
 [project.scripts]
 dubgraft = "dubgraft.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/NightCorpse/DubGraft"
+Repository = "https://github.com/NightCorpse/DubGraft"
+Issues = "https://github.com/NightCorpse/DubGraft/issues"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

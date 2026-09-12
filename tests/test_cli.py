@@ -185,6 +185,8 @@ def test_cli_accepts_advanced_analysis_options() -> None:
             "8",
             "--anchor-gap",
             "120",
+            "--jobs",
+            "3",
             "--direct-limit",
             "35",
             "--force",
@@ -197,6 +199,7 @@ def test_cli_accepts_advanced_analysis_options() -> None:
     assert config.matching_config.confidence_threshold == 25
     assert config.matching_config.anchor_count == 8
     assert config.matching_config.minimum_anchor_distance_seconds == 120
+    assert config.matching_config.jobs == 3
     assert config.timeline_config.direct_tolerance_seconds == pytest.approx(0.035)
     assert config.force is True
 
@@ -219,6 +222,8 @@ def test_cli_accepts_short_advanced_analysis_options() -> None:
             "8",
             "-g",
             "120",
+            "-j",
+            "3",
             "-d",
             "35",
             "-f",
@@ -231,6 +236,7 @@ def test_cli_accepts_short_advanced_analysis_options() -> None:
     assert config.matching_config.confidence_threshold == 25
     assert config.matching_config.anchor_count == 8
     assert config.matching_config.minimum_anchor_distance_seconds == 120
+    assert config.matching_config.jobs == 3
     assert config.timeline_config.direct_tolerance_seconds == pytest.approx(0.035)
     assert config.force is True
 
@@ -245,6 +251,19 @@ def test_cli_rejects_fewer_than_four_anchors(
 
     assert exit_info.value.code == 2
     assert "must be an integer of at least 4" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("jobs", ["0", "-1", "invalid"])
+def test_cli_rejects_invalid_matching_jobs(
+    jobs: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        parse_processing_config(
+            ["source.mkv", "target.mkv", "output.mkv", "--jobs", jobs]
+        )
+
+    assert exit_info.value.code == 2
+    assert "must be a positive integer" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -937,6 +956,7 @@ def test_cli_prints_full_report_after_summary(
     assert "Scan step: 10.000s" in output
     assert "Search radius: 90.000s" in output
     assert "Minimum confidence: 25.000" in output
+    assert "Matching jobs: automatic (up to 4)" in output
     assert "Direct limit: 35.000ms" in output
 
 
@@ -1003,6 +1023,7 @@ def test_cli_writes_completed_processing_report(
     assert data["parameters"]["matching"]["confidence_threshold"] == 25
     assert data["parameters"]["matching"]["anchor_count"] == 4
     assert data["parameters"]["matching"]["minimum_anchor_distance_seconds"] == 10
+    assert data["parameters"]["matching"]["jobs"] is None
     assert data["parameters"]["timeline"]["direct_tolerance_seconds"] == 0.035
 
 

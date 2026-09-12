@@ -1,3 +1,6 @@
+import logging
+import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +18,7 @@ from dubgraft.matching import (
     scan_audio_matches,
     select_distributed_anchors,
 )
+from dubgraft.runtime import RunOutput
 
 
 def test_correlate_audio_locates_fingerprint_in_search_window() -> None:
@@ -79,6 +83,7 @@ def test_scan_audio_matches_filters_candidates_by_confidence(
         scan_step_seconds=20,
         search_radius_seconds=5,
         confidence_threshold=8,
+        jobs=1,
     )
     progress: list[tuple[int, int]] = []
 
@@ -116,6 +121,7 @@ def test_scan_audio_matches_skips_an_unavailable_window(
         scan_step_seconds=20,
         search_radius_seconds=5,
         confidence_threshold=8,
+        jobs=1,
     )
 
     matches = scan_audio_matches(
@@ -123,6 +129,104 @@ def test_scan_audio_matches_skips_an_unavailable_window(
     )
 
     assert [match.target_time for match in matches] == [40]
+
+
+def test_scan_audio_matches_runs_concurrently_but_preserves_timeline_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    barrier = threading.Barrier(4)
+    lock = threading.Lock()
+    main_thread = threading.get_ident()
+    active = 0
+    maximum_active = 0
+    progress: list[tuple[int, int, int]] = []
+
+    def scan(
+        source: Path,
+        source_stream_index: int,
+        target: Path,
+        target_stream_index: int,
+        target_time: float,
+        config: MatchingConfig,
+    ) -> AudioMatch:
+        nonlocal active, maximum_active
+        with lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+        if target_time <= 80:
+            barrier.wait(timeout=2)
+        time.sleep((100 - target_time) / 1000)
+        with lock:
+            active -= 1
+        return AudioMatch(target_time, target_time, 0, 100)
+
+    monkeypatch.setattr("dubgraft.matching.os.cpu_count", lambda: 8)
+    monkeypatch.setattr("dubgraft.matching._scan_audio_match", scan)
+
+    matches = scan_audio_matches(
+        Path("source.mkv"),
+        1,
+        Path("target.mkv"),
+        2,
+        130,
+        MatchingConfig(scan_step_seconds=20),
+        progress=lambda completed, total: progress.append(
+            (completed, total, threading.get_ident())
+        ),
+    )
+
+    assert maximum_active == 4
+    assert [match.target_time for match in matches] == [20, 40, 60, 80, 100]
+    assert [(completed, total) for completed, total, _ in progress] == [
+        (1, 5),
+        (2, 5),
+        (3, 5),
+        (4, 5),
+        (5, 5),
+    ]
+    assert all(thread_id == main_thread for _, _, thread_id in progress)
+
+
+def test_scan_audio_matches_preserves_logging_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = tmp_path / "matching.log"
+
+    def scan(*args: object, **kwargs: object) -> None:
+        logging.getLogger("dubgraft.matching.worker").debug("worker command")
+
+    monkeypatch.setattr("dubgraft.matching._scan_audio_match", scan)
+
+    with RunOutput(log_path=log):
+        scan_audio_matches(
+            Path("source.mkv"),
+            1,
+            Path("target.mkv"),
+            2,
+            100,
+            MatchingConfig(jobs=2),
+        )
+
+    assert log.read_text(encoding="utf-8").count("worker command") == 3
+
+
+def test_scan_audio_matches_propagates_worker_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("worker failed")
+
+    monkeypatch.setattr("dubgraft.matching._scan_audio_match", fail)
+
+    with pytest.raises(RuntimeError, match="worker failed"):
+        scan_audio_matches(
+            Path("source.mkv"),
+            1,
+            Path("target.mkv"),
+            2,
+            100,
+            MatchingConfig(jobs=2),
+        )
 
 
 def test_anchor_formulas_match_legacy_behavior() -> None:

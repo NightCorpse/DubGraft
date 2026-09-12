@@ -25,6 +25,7 @@ def test_matching_config_uses_validated_legacy_defaults() -> None:
     assert config.confidence_threshold == 60
     assert config.anchor_count is None
     assert config.minimum_anchor_distance_seconds is None
+    assert config.jobs is None
     assert ANALYSIS_SAMPLE_RATE == 22_050
     assert validate_matching_config(config) is config
 
@@ -38,6 +39,9 @@ def test_matching_config_uses_validated_legacy_defaults() -> None:
         MatchingConfig(confidence_threshold=-1),
         MatchingConfig(anchor_count=3),
         MatchingConfig(minimum_anchor_distance_seconds=-1),
+        MatchingConfig(jobs=0),
+        MatchingConfig(jobs=True),
+        MatchingConfig(jobs=1.5),  # type: ignore[arg-type]
     ],
 )
 def test_matching_config_rejects_invalid_values(config: MatchingConfig) -> None:

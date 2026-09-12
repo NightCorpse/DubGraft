@@ -192,6 +192,16 @@ def _anchor_count(value: str) -> int:
     return count
 
 
+def _job_count(value: str) -> int:
+    try:
+        count = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be a positive integer") from error
+    if count < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return count
+
+
 def _language_code(value: str) -> str:
     try:
         return normalize_language_code(value)
@@ -302,6 +312,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         metavar="SECONDS",
         help="override the automatic minimum distance between anchors",
+    )
+    analysis_group.add_argument(
+        "-j",
+        "--jobs",
+        type=_job_count,
+        metavar="NUMBER",
+        help="concurrent matching jobs (default: automatic, up to 4)",
     )
     analysis_group.add_argument(
         "-d",
@@ -432,6 +449,7 @@ def parse_processing_config(
             confidence_threshold=arguments.min_confidence,
             anchor_count=arguments.anchors,
             minimum_anchor_distance_seconds=arguments.anchor_gap,
+            jobs=arguments.jobs,
         ),
         timeline_config=TimelineConfig(
             direct_tolerance_seconds=arguments.direct_limit / 1000

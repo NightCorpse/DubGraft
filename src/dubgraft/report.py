@@ -225,6 +225,7 @@ def format_human_report(
             f"  Scan step: {matching_config.scan_step_seconds:.3f}s",
             f"  Search radius: {matching_config.search_radius_seconds:.3f}s",
             f"  Minimum confidence: {matching_config.confidence_threshold:.3f}",
+            f"  Matching jobs: {matching_config.jobs or 'automatic (up to 4)'}",
             f"  Anchors requested: {result.requested_anchor_count}",
             f"  Anchor gap: {result.minimum_anchor_distance:.3f}s",
             f"  Minimum coverage: {timeline_config.minimum_coverage:.3%}",

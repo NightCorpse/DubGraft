@@ -263,7 +263,7 @@ before publishing it as Output.
 
 ### Add a dub and preserve its metadata
 
-By default, the selected Source track's title, language, and dispositions are
+By default, the selected Source track's title and language are
 carried to the added track:
 
 ```bash
@@ -343,6 +343,7 @@ dubgraft source.mkv target.mkv output.mkv --overwrite
 |---|---|---|
 | `--track-name NAME` | Source title | Override the added track title. |
 | `--language CODE` | Source language | Accept ISO 639-1 or ISO 639-2 and store ISO 639-2/B. |
+| `--source-default` | Off | Make the added Source audio the default audio track. |
 
 ### Matching and timeline analysis
 

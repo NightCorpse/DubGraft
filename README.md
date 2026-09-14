@@ -354,6 +354,7 @@ dubgraft source.mkv target.mkv output.mkv --overwrite
 | `-c`, `--min-confidence VALUE` | `60` | Minimum correlation-peak prominence accepted as a candidate. |
 | `-a`, `--anchors NUMBER` | Automatic | Target number of candidates selected as distributed anchors; the actual count may be lower. Minimum: `4`. |
 | `-g`, `--anchor-gap SECONDS` | Automatic | Minimum spacing between selected anchors, preventing clustering and encouraging broader timeline coverage. |
+| `-j`, `--jobs NUMBER` | `4` | Number of concurrent matching jobs. Use `1` for serial matching. |
 | `-d`, `--direct-limit MS` | `20` | Largest median offset left uncorrected as `direct`. |
 | `-f`, `--force` | Off | Allow only advanced analysis values outside recommended limits. |
 

@@ -10,10 +10,14 @@ from dubgraft.execution import iter_progress_times
 from dubgraft.matching import MatchingResult, TimelineAnalysis, TimelineKind
 from dubgraft.media import FFmpegError, MediaChapter, MediaInfo, MediaStream
 from dubgraft.processing import (
+    _STATISTICS_METADATA_KEYS,
     InconclusiveTimelineError,
     ProcessingError,
+    _added_audio_output_index,
+    _added_audio_target_insertion_index,
     _audio_metadata_arguments,
     _run_ffmpeg,
+    _stream_mapping_arguments,
     _target_stream_metadata_arguments,
     _validate_output,
     _validate_reconstructed_audio,
@@ -152,12 +156,30 @@ def output_info(
     *,
     language: str = "por",
     title: str = "Brazilian Portuguese",
+    dispositions: tuple[str, ...] | None = None,
 ) -> MediaInfo:
+    audio_indices = [
+        position
+        for position, stream in enumerate(target_info.streams)
+        if stream.kind == "audio"
+    ]
+    insertion_index = (
+        audio_indices[-1] if audio_indices else len(target_info.streams) - 1
+    )
+    added_position = insertion_index + 1
+    if dispositions is None:
+        dispositions = tuple(d for d in source_audio.dispositions if d != "default")
     added_audio = replace(
         source_audio,
-        index=len(target_info.streams),
+        index=added_position,
         language=language,
         title=title,
+        dispositions=dispositions,
+    )
+    output_streams = (
+        *target_info.streams[: insertion_index + 1],
+        added_audio,
+        *target_info.streams[insertion_index + 1 :],
     )
     return MediaInfo(
         path,
@@ -165,7 +187,7 @@ def output_info(
         target_info.duration,
         None,
         None,
-        (*target_info.streams, added_audio),
+        output_streams,
         target_info.title,
         target_info.chapters,
     )
@@ -228,9 +250,14 @@ def test_mux_source_audio_preserves_target_and_applies_static_offset(
     command = commands[-1]
     option_command = commands[0] if offset > 0 else command
     assert option_command[option_command.index(option) + 1] == value
-    assert command[command.index("-map") + 1] == "0"
-    second_map = command.index("-map", command.index("-map") + 1)
-    assert command[second_map + 1] == ("1:0" if offset > 0 else "1:3")
+    maps = [command[i + 1] for i in range(len(command)) if command[i] == "-map"]
+    assert maps == [
+        "0:0",
+        "0:1",
+        "0:2",
+        "1:0" if offset > 0 else "1:3",
+        "0:4",
+    ]
     if offset > 0:
         assert len(commands) == 2
         assert commands[0][commands[0].index("-f") + 1] == "matroska"
@@ -512,7 +539,8 @@ def test_mux_drift_audio_retimes_only_the_new_audio_stream(
     assert "reconstructed-audio.mka" in reconstruction_command[-1]
     assert command[command.index("-c") + 1] == "copy"
     assert "-filter_complex" not in command
-    assert command[command.index("-map", command.index("-map") + 1) + 1] == "1:0"
+    maps = [command[i + 1] for i in range(len(command)) if command[i] == "-map"]
+    assert maps == ["0:0", "0:1", "0:2", "1:0", "0:4"]
     assert command[command.index("-max_interleave_delta") + 1] == "0"
     assert config.output.is_file()
 
@@ -535,7 +563,7 @@ def test_output_validation_accepts_expected_mux(
         audio_codec="eac3",
     )
 
-    assert validated == replace(expected, added_audio_stream_index=4)
+    assert validated == replace(expected, added_audio_stream_index=3)
 
 
 def test_output_validation_rejects_metadata_change(
@@ -606,8 +634,11 @@ def test_output_validation_rejects_added_audio_timing_change(
 ) -> None:
     config, _, target_info, source_audio, _ = processing_media
     expected = output_info(config.output, target_info, source_audio)
+    added_index = next(
+        i for i, s in enumerate(expected.streams) if s.title == "Brazilian Portuguese"
+    )
     streams = list(expected.streams)
-    streams[-1] = replace(streams[-1], start_time=0.25, duration=900)
+    streams[added_index] = replace(streams[added_index], start_time=0.25, duration=900)
     monkeypatch.setattr(
         "dubgraft.processing.probe_media",
         lambda path: replace(expected, streams=tuple(streams)),
@@ -624,7 +655,7 @@ def test_output_validation_rejects_added_audio_timing_change(
             audio_duration=999.9,
         )
 
-    streams[-1] = replace(streams[-1], start_time=0, duration=900)
+    streams[added_index] = replace(streams[added_index], start_time=0, duration=900)
     with pytest.raises(ProcessingError, match="added audio duration expected"):
         _validate_output(
             config.output,
@@ -725,9 +756,10 @@ def test_output_validation_accepts_mp4_cover_thumbnail_disposition(
     )
     target_info = replace(target_info, streams=(*target_info.streams, cover))
     expected = output_info(config.output, target_info, source_audio)
+    cover_index = next(i for i, s in enumerate(expected.streams) if s.attached_picture)
     streams = list(expected.streams)
-    streams[-2] = replace(
-        streams[-2],
+    streams[cover_index] = replace(
+        streams[cover_index],
         dispositions=("attached_pic", "timed_thumbnails"),
     )
     monkeypatch.setattr(
@@ -743,7 +775,7 @@ def test_output_validation_accepts_mp4_cover_thumbnail_disposition(
         audio_codec="eac3",
     )
 
-    assert validated.added_audio_stream_index == len(target_info.streams)
+    assert validated.added_audio_stream_index == 3
 
 
 def test_mux_preflight_suggests_target_extension(
@@ -1170,3 +1202,165 @@ def test_process_media_requires_a_finite_target_duration(
             source_audio,
             target_audio,
         )
+
+
+def test_stream_mapping_places_audio_after_existing_audio() -> None:
+    target_info = MediaInfo(
+        Path("t.mkv"),
+        "matroska",
+        10.0,
+        None,
+        None,
+        (
+            MediaStream(index=0, kind="video", codec="hevc"),
+            MediaStream(index=1, kind="audio", codec="eac3"),
+            MediaStream(index=2, kind="subtitle", codec="subrip"),
+            MediaStream(index=3, kind="subtitle", codec="subrip"),
+        ),
+    )
+    args = _stream_mapping_arguments(target_info, "1:0")
+    assert args == [
+        "-map",
+        "0:0",
+        "-map",
+        "0:1",
+        "-map",
+        "1:0",
+        "-map",
+        "0:2",
+        "-map",
+        "0:3",
+    ]
+    assert _added_audio_target_insertion_index(target_info) == 1
+    assert _added_audio_output_index(target_info) == 2
+
+
+def test_stream_mapping_places_audio_after_video_when_target_has_no_audio() -> None:
+    target_info = MediaInfo(
+        Path("t.mkv"),
+        "matroska",
+        10.0,
+        None,
+        None,
+        (
+            MediaStream(index=0, kind="video", codec="hevc"),
+            MediaStream(index=1, kind="subtitle", codec="subrip"),
+        ),
+    )
+    args = _stream_mapping_arguments(target_info, "1:0")
+    assert args == ["-map", "0:0", "-map", "1:0", "-map", "0:1"]
+    assert _added_audio_target_insertion_index(target_info) == 0
+    assert _added_audio_output_index(target_info) == 1
+
+
+def test_audio_metadata_arguments_clears_statistics_and_handles_default(
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+    source_with_default = replace(
+        source_audio, dispositions=("default", "hearing_impaired")
+    )
+    args = _audio_metadata_arguments(
+        config, target_info, source_with_default, config.output
+    )
+    for key in _STATISTICS_METADATA_KEYS:
+        assert f"{key}=" in args
+    assert "-disposition:a:2" in args
+    assert args[args.index("-disposition:a:2") + 1] == "hearing_impaired"
+
+    target_no_default_streams = tuple(
+        replace(s, dispositions=()) if s.kind == "audio" else s
+        for s in target_info.streams
+    )
+    target_no_default = replace(target_info, streams=target_no_default_streams)
+    args_no_default = _audio_metadata_arguments(
+        config, target_no_default, source_with_default, config.output
+    )
+    assert "-disposition:a:2" in args_no_default
+    assert (
+        args_no_default[args_no_default.index("-disposition:a:2") + 1]
+        == "hearing_impaired"
+    )
+
+
+def test_output_validation_rejects_multiple_default_audio_streams(
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+    expected = output_info(config.output, target_info, source_audio)
+    streams = list(expected.streams)
+    streams[1] = replace(streams[1], dispositions=("default",))
+    streams[3] = replace(streams[3], dispositions=("default",))
+    monkeypatch.setattr(
+        "dubgraft.processing.probe_media",
+        lambda path: replace(expected, streams=tuple(streams)),
+    )
+    with pytest.raises(
+        ProcessingError, match="expected at most 1 default audio stream"
+    ):
+        _validate_output(
+            config.output,
+            config,
+            target_info,
+            source_audio,
+            audio_codec="eac3",
+        )
+
+
+def test_output_validation_rejects_default_audio_when_target_has_no_default(
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+    target_no_default_streams = tuple(
+        replace(s, dispositions=()) if s.kind == "audio" else s
+        for s in target_info.streams
+    )
+    target_no_default = replace(target_info, streams=target_no_default_streams)
+    expected = output_info(config.output, target_no_default, source_audio)
+    streams = list(expected.streams)
+    streams[3] = replace(streams[3], dispositions=("default",))
+    monkeypatch.setattr(
+        "dubgraft.processing.probe_media",
+        lambda path: replace(expected, streams=tuple(streams)),
+    )
+    with pytest.raises(
+        ProcessingError, match="expected at most 0 default audio stream"
+    ):
+        _validate_output(
+            config.output,
+            config,
+            target_no_default,
+            source_audio,
+            audio_codec="eac3",
+        )
+
+
+def test_output_validation_preserves_multiple_default_audio_streams_from_target(
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+    target_streams = list(target_info.streams)
+    target_streams[1] = replace(target_streams[1], dispositions=("default",))
+    target_streams[2] = replace(target_streams[2], dispositions=("default",))
+    multi_default_target = replace(target_info, streams=tuple(target_streams))
+
+    expected = output_info(config.output, multi_default_target, source_audio)
+    monkeypatch.setattr("dubgraft.processing.probe_media", lambda path: expected)
+    _validate_output(
+        config.output,
+        config,
+        multi_default_target,
+        source_audio,
+        audio_codec="eac3",
+    )

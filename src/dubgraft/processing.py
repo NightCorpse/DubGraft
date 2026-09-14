@@ -233,6 +233,50 @@ def _source_audio_duration(
     return None
 
 
+_STATISTICS_METADATA_KEYS = (
+    "_STATISTICS_TAGS",
+    "_STATISTICS_WRITING_APP",
+    "_STATISTICS_WRITING_DATE_UTC",
+    "BPS",
+    "DURATION",
+    "NUMBER_OF_FRAMES",
+    "NUMBER_OF_BYTES",
+)
+
+
+def _added_audio_target_insertion_index(target_info: MediaInfo) -> int:
+    audio_indices = [
+        position
+        for position, stream in enumerate(target_info.streams)
+        if stream.kind == "audio"
+    ]
+    if audio_indices:
+        return audio_indices[-1]
+    video_indices = [
+        position
+        for position, stream in enumerate(target_info.streams)
+        if stream.kind == "video"
+    ]
+    if video_indices:
+        return video_indices[-1]
+    return len(target_info.streams) - 1
+
+
+def _added_audio_output_index(target_info: MediaInfo) -> int:
+    return _added_audio_target_insertion_index(target_info) + 1
+
+
+def _stream_mapping_arguments(target_info: MediaInfo, source_stream: str) -> list[str]:
+    insertion_index = _added_audio_target_insertion_index(target_info)
+    arguments: list[str] = []
+    for stream in target_info.streams[: insertion_index + 1]:
+        arguments.extend(["-map", f"0:{stream.index}"])
+    arguments.extend(["-map", source_stream])
+    for stream in target_info.streams[insertion_index + 1 :]:
+        arguments.extend(["-map", f"0:{stream.index}"])
+    return arguments
+
+
 def _audio_metadata_arguments(
     config: ProcessingConfig,
     target_info: MediaInfo,
@@ -248,31 +292,48 @@ def _audio_metadata_arguments(
         arguments.extend([f"-metadata:s:a:{audio_index}", f"title={title}"])
         if output.suffix.casefold() in {".mp4", ".m4v", ".mov"}:
             arguments.extend([f"-metadata:s:a:{audio_index}", f"handler_name={title}"])
+    for key in _STATISTICS_METADATA_KEYS:
+        arguments.extend([f"-metadata:s:a:{audio_index}", f"{key}="])
+    dispositions = tuple(
+        value for value in source_audio.dispositions if value != "default"
+    )
     arguments.extend(
         [
             f"-disposition:a:{audio_index}",
-            "+".join(source_audio.dispositions) or "0",
+            "+".join(dispositions) or "0",
         ]
     )
     return arguments
 
 
 def _target_stream_metadata_arguments(
-    target_info: MediaInfo, output: Path
+    target_info: MediaInfo,
+    output: Path,
+    *,
+    insertion_index: int | None = None,
 ) -> list[str]:
     arguments = []
     video_index = 0
     for position, stream in enumerate(target_info.streams):
+        output_position = (
+            position
+            if insertion_index is None or position <= insertion_index
+            else position + 1
+        )
         if stream.language:
-            arguments.extend([f"-metadata:s:{position}", f"language={stream.language}"])
+            arguments.extend(
+                [f"-metadata:s:{output_position}", f"language={stream.language}"]
+            )
         if stream.title:
-            arguments.extend([f"-metadata:s:{position}", f"title={stream.title}"])
+            arguments.extend(
+                [f"-metadata:s:{output_position}", f"title={stream.title}"]
+            )
             if output.suffix.casefold() in {".mp4", ".m4v", ".mov"}:
                 arguments.extend(
-                    [f"-metadata:s:{position}", f"handler_name={stream.title}"]
+                    [f"-metadata:s:{output_position}", f"handler_name={stream.title}"]
                 )
         arguments.extend(
-            [f"-disposition:{position}", "+".join(stream.dispositions) or "0"]
+            [f"-disposition:{output_position}", "+".join(stream.dispositions) or "0"]
         )
         if stream.kind == "video":
             for option, value in (
@@ -372,7 +433,7 @@ def _validate_output(
         )
     ]
 
-    expected_position = output_audio_positions[target_audio_count]
+    expected_position = _added_audio_output_index(target_info)
 
     def identification_score(position: int) -> tuple[int, int, float]:
         stream = output_info.streams[position]
@@ -506,6 +567,27 @@ def _validate_output(
         ):
             fail(f"Target chapter {position} changed during muxing")
 
+    target_default_audio_count = sum(
+        stream.kind == "audio" and "default" in stream.dispositions
+        for stream in target_info.streams
+    )
+    default_audio_positions = [
+        position
+        for position, stream in enumerate(output_info.streams)
+        if stream.kind == "audio" and "default" in stream.dispositions
+    ]
+    if len(
+        default_audio_positions
+    ) > target_default_audio_count and path.suffix.casefold() not in {
+        ".mp4",
+        ".m4v",
+        ".mov",
+    }:
+        fail(
+            f"expected at most {target_default_audio_count} default audio stream(s), found "
+            f"{len(default_audio_positions)} at positions {default_audio_positions}"
+        )
+
     for name, expected, actual in (
         ("codec", audio_codec, added_audio.codec),
         ("channel count", source_audio.channels, added_audio.channels),
@@ -516,19 +598,22 @@ def _validate_output(
     ):
         if expected is not None and actual != expected:
             fail(f"added audio {name} expected {expected!r}, found {actual!r}")
-    added_dispositions_match = added_audio.dispositions == source_audio.dispositions
+    expected_added_dispositions = tuple(
+        value for value in source_audio.dispositions if value != "default"
+    )
+    added_dispositions_match = added_audio.dispositions == expected_added_dispositions
     if (
         not added_dispositions_match
         and path.suffix.casefold() in {".mp4", ".m4v", ".mov"}
-        and "default" not in source_audio.dispositions
+        and "default" not in expected_added_dispositions
     ):
         added_dispositions_match = (
             tuple(value for value in added_audio.dispositions if value != "default")
-            == source_audio.dispositions
+            == expected_added_dispositions
         )
     if not added_dispositions_match:
         fail(
-            f"added audio dispositions expected {source_audio.dispositions!r}, "
+            f"added audio dispositions expected {expected_added_dispositions!r}, "
             f"found {added_audio.dispositions!r}"
         )
 
@@ -647,12 +732,10 @@ def validate_render_compatibility(
             else:
                 command.extend(["-i", str(config.source)])
                 source_stream = f"1:{source_audio.index}"
+            insertion_index = _added_audio_target_insertion_index(target_info)
+            command.extend(_stream_mapping_arguments(target_info, source_stream))
             command.extend(
                 [
-                    "-map",
-                    "0",
-                    "-map",
-                    source_stream,
                     "-map_metadata",
                     "0",
                     "-map_chapters",
@@ -670,7 +753,9 @@ def validate_render_compatibility(
                 )
                 command.extend([f"-c:a:{audio_index}", "eac3", "-b:a", "640k"])
             command.extend(
-                _target_stream_metadata_arguments(target_info, temporary_output)
+                _target_stream_metadata_arguments(
+                    target_info, temporary_output, insertion_index=insertion_index
+                )
             )
             command.extend(
                 _audio_metadata_arguments(
@@ -785,14 +870,13 @@ def mux_source_audio(
             command = [ffmpeg, "-v", "error", "-y", "-i", str(config.target)]
             if offset < 0:
                 command.extend(["-itsoffset", str(-offset)])
+            insertion_index = _added_audio_target_insertion_index(target_info)
+            command.extend(["-i", str(source_path)])
+            command.extend(
+                _stream_mapping_arguments(target_info, f"1:{source_stream_index}")
+            )
             command.extend(
                 [
-                    "-i",
-                    str(source_path),
-                    "-map",
-                    "0",
-                    "-map",
-                    f"1:{source_stream_index}",
                     "-map_metadata",
                     "0",
                     "-map_chapters",
@@ -807,7 +891,9 @@ def mux_source_audio(
                 ]
             )
             command.extend(
-                _target_stream_metadata_arguments(target_info, temporary_output)
+                _target_stream_metadata_arguments(
+                    target_info, temporary_output, insertion_index=insertion_index
+                )
             )
             command.extend(
                 _audio_metadata_arguments(
@@ -945,6 +1031,7 @@ def mux_drift_audio(
             _validate_reconstructed_audio(reconstructed_audio, source_audio)
 
             temporary_output = Path(temporary_directory) / output.name
+            insertion_index = _added_audio_target_insertion_index(target_info)
             command = [
                 ffmpeg,
                 "-v",
@@ -954,26 +1041,29 @@ def mux_drift_audio(
                 str(config.target),
                 "-i",
                 str(reconstructed_audio),
-                "-map",
-                "0",
-                "-map",
-                "1:0",
-                "-map_metadata",
-                "0",
-                "-map_chapters",
-                "0",
-                "-c",
-                "copy",
-                "-copy_unknown",
-                "-max_interleave_delta",
-                "0",
-                "-t",
-                str(target_duration),
-                "-avoid_negative_ts",
-                "disabled",
             ]
+            command.extend(_stream_mapping_arguments(target_info, "1:0"))
             command.extend(
-                _target_stream_metadata_arguments(target_info, temporary_output)
+                [
+                    "-map_metadata",
+                    "0",
+                    "-map_chapters",
+                    "0",
+                    "-c",
+                    "copy",
+                    "-copy_unknown",
+                    "-max_interleave_delta",
+                    "0",
+                    "-t",
+                    str(target_duration),
+                    "-avoid_negative_ts",
+                    "disabled",
+                ]
+            )
+            command.extend(
+                _target_stream_metadata_arguments(
+                    target_info, temporary_output, insertion_index=insertion_index
+                )
             )
             command.extend(
                 _audio_metadata_arguments(

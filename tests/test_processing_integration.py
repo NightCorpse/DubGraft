@@ -1,3 +1,4 @@
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -345,3 +346,160 @@ def test_mp4_cover_art_survives_mux(tmp_path: Path) -> None:
     assert len(covers) == 1
     assert covers[0].codec == "mjpeg"
     assert "attached_pic" in covers[0].dispositions
+
+
+def test_mux_places_added_audio_before_subtitles_and_strips_stats_and_duplicate_default(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    output = tmp_path / "output.mkv"
+    sub1 = tmp_path / "sub1.srt"
+    sub2 = tmp_path / "sub2.srt"
+    sub1.write_text("1\n00:00:00,000 --> 00:00:01,000\nSub 1\n", encoding="utf-8")
+    sub2.write_text("1\n00:00:00,000 --> 00:00:01,000\nSub 2\n", encoding="utf-8")
+
+    run_ffmpeg(
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=880:sample_rate=48000:duration=1",
+        "-c:a",
+        "eac3",
+        "-b:a",
+        "192k",
+        "-metadata:s:a:0",
+        "language=por",
+        "-metadata:s:a:0",
+        "title=Dublado",
+        "-metadata:s:a:0",
+        "BPS=192000",
+        "-metadata:s:a:0",
+        "NUMBER_OF_FRAMES=31",
+        "-metadata:s:a:0",
+        "NUMBER_OF_BYTES=24000",
+        "-metadata:s:a:0",
+        "_STATISTICS_TAGS=BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES",
+        "-metadata:s:a:0",
+        "_STATISTICS_WRITING_APP=mkvmerge v83.0",
+        "-metadata:s:a:0",
+        "_STATISTICS_WRITING_DATE_UTC=2026-09-14 01:25:04",
+        "-disposition:a:0",
+        "default",
+        str(source),
+    )
+
+    run_ffmpeg(
+        "-f",
+        "lavfi",
+        "-i",
+        "color=size=64x64:rate=24:duration=1",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:sample_rate=48000:duration=1",
+        "-i",
+        str(sub1),
+        "-i",
+        str(sub2),
+        "-map",
+        "0:v",
+        "-map",
+        "1:a",
+        "-map",
+        "2:s",
+        "-map",
+        "3:s",
+        "-c:v",
+        "ffv1",
+        "-c:a",
+        "pcm_s16le",
+        "-c:s",
+        "subrip",
+        "-metadata:s:a:0",
+        "language=eng",
+        "-metadata:s:a:0",
+        "title=Original",
+        "-disposition:a:0",
+        "default",
+        "-metadata:s:s:0",
+        "title=English Subs",
+        "-metadata:s:s:0",
+        "language=eng",
+        "-metadata:s:s:1",
+        "title=Portuguese Subs",
+        "-metadata:s:s:1",
+        "language=por",
+        str(target),
+    )
+
+    source_info = probe_media(source)
+    target_info = probe_media(target)
+    source_audio = select_audio_stream(source_info)
+    config = ProcessingConfig(source, target, output)
+
+    validated = mux_source_audio(
+        config,
+        target_info,
+        source_audio,
+        offset=0,
+        source_duration=source_info.duration,
+    )
+
+    assert validated.path == output.resolve()
+    output_info = probe_media(output)
+
+    assert [stream.kind for stream in output_info.streams] == [
+        "video",
+        "audio",
+        "audio",
+        "subtitle",
+        "subtitle",
+    ]
+    assert output_info.streams[1].title == "Original"
+    assert output_info.streams[2].title == "Dublado"
+    assert output_info.streams[3].title == "English Subs"
+    assert output_info.streams[4].title == "Portuguese Subs"
+
+    assert "default" in output_info.streams[1].dispositions
+    assert "default" not in output_info.streams[2].dispositions
+    default_audios = [
+        s
+        for s in output_info.streams
+        if s.kind == "audio" and "default" in s.dispositions
+    ]
+    assert len(default_audios) == 1
+
+    probe_raw = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:1",
+            "-show_entries",
+            "stream_tags",
+            "-of",
+            "json",
+            str(output),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    tags = json.loads(probe_raw.stdout)["streams"][0].get("tags", {})
+    for key in (
+        "_STATISTICS_TAGS",
+        "_STATISTICS_WRITING_APP",
+        "_STATISTICS_WRITING_DATE_UTC",
+        "BPS",
+        "NUMBER_OF_FRAMES",
+        "NUMBER_OF_BYTES",
+    ):
+        assert key not in tags
+
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(output), "-f", "null", "-"],
+        check=True,
+        capture_output=True,
+    )

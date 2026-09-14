@@ -19,6 +19,7 @@ class MatchingConfig:
     confidence_threshold: float = 60.0
     anchor_count: int | None = None
     minimum_anchor_distance_seconds: float | None = None
+    jobs: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +139,12 @@ def validate_matching_config(config: MatchingConfig) -> MatchingConfig:
         raise ConfigurationError(
             "minimum anchor distance must be finite and non-negative"
         )
+    if config.jobs is not None and (
+        isinstance(config.jobs, bool)
+        or not isinstance(config.jobs, int)
+        or config.jobs < 1
+    ):
+        raise ConfigurationError("jobs must be a positive integer")
     return config
 
 

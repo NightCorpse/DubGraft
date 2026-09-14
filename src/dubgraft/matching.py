@@ -1,7 +1,10 @@
 """Audio correlation, scanning, and distributed anchor selection."""
 
 import math
+import os
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -63,6 +66,7 @@ class MatchingResult:
 
 _DEFAULT_MATCHING_CONFIG = MatchingConfig()
 _DEFAULT_TIMELINE_CONFIG = TimelineConfig()
+_MAX_AUTOMATIC_JOBS = 4
 
 
 def correlate_audio(
@@ -97,6 +101,50 @@ def correlate_audio(
     )
 
 
+def _scan_audio_match(
+    source: Path,
+    source_stream_index: int,
+    target: Path,
+    target_stream_index: int,
+    target_time: float,
+    config: MatchingConfig,
+) -> AudioMatch | None:
+    fingerprint = extract_audio_window(
+        target,
+        target_stream_index,
+        target_time,
+        config.fingerprint_size_seconds,
+    )
+    search_start = max(0.0, target_time - config.search_radius_seconds)
+    search_window = extract_audio_window(
+        source,
+        source_stream_index,
+        search_start,
+        config.fingerprint_size_seconds + 2 * config.search_radius_seconds,
+    )
+    match = correlate_audio(
+        fingerprint,
+        search_window,
+        target_time=target_time,
+        search_start=search_start,
+    )
+    if match is None or match.confidence < config.confidence_threshold:
+        return None
+    return match
+
+
+def _matching_job_count(configured_jobs: int | None, task_count: int) -> int:
+    if task_count <= 0:
+        return 0
+    available_cpus = os.cpu_count() or 1
+    requested_jobs = (
+        min(_MAX_AUTOMATIC_JOBS, available_cpus)
+        if configured_jobs is None
+        else configured_jobs
+    )
+    return min(requested_jobs, task_count)
+
+
 def scan_audio_matches(
     source: Path,
     source_stream_index: int,
@@ -112,38 +160,58 @@ def scan_audio_matches(
     if not math.isfinite(target_duration) or target_duration <= 0:
         raise ValueError("target duration must be a positive finite number")
 
-    candidates = []
     scan_times = []
     target_time = config.scan_step_seconds
     scan_end = target_duration - config.scan_step_seconds
     while target_time < scan_end:
         scan_times.append(target_time)
         target_time += config.scan_step_seconds
-    for completed, target_time in enumerate(scan_times, start=1):
-        fingerprint = extract_audio_window(
-            target,
-            target_stream_index,
-            target_time,
-            config.fingerprint_size_seconds,
-        )
-        search_start = max(0.0, target_time - config.search_radius_seconds)
-        search_window = extract_audio_window(
-            source,
-            source_stream_index,
-            search_start,
-            config.fingerprint_size_seconds + 2 * config.search_radius_seconds,
-        )
-        match = correlate_audio(
-            fingerprint,
-            search_window,
-            target_time=target_time,
-            search_start=search_start,
-        )
-        if match is not None and match.confidence >= config.confidence_threshold:
-            candidates.append(match)
-        if progress is not None:
-            progress(completed, len(scan_times))
-    return tuple(candidates)
+    job_count = _matching_job_count(config.jobs, len(scan_times))
+    if job_count <= 1:
+        candidates = []
+        for completed, target_time in enumerate(scan_times, start=1):
+            match = _scan_audio_match(
+                source,
+                source_stream_index,
+                target,
+                target_stream_index,
+                target_time,
+                config,
+            )
+            if match is not None:
+                candidates.append(match)
+            if progress is not None:
+                progress(completed, len(scan_times))
+        return tuple(candidates)
+
+    matches: list[AudioMatch | None] = [None] * len(scan_times)
+    futures: dict[Future[AudioMatch | None], int] = {}
+    with ThreadPoolExecutor(
+        max_workers=job_count, thread_name_prefix="dubgraft-match"
+    ) as executor:
+        for index, target_time in enumerate(scan_times):
+            context = copy_context()
+            future = executor.submit(
+                context.run,
+                _scan_audio_match,
+                source,
+                source_stream_index,
+                target,
+                target_stream_index,
+                target_time,
+                config,
+            )
+            futures[future] = index
+        try:
+            for completed, future in enumerate(as_completed(futures), start=1):
+                matches[futures[future]] = future.result()
+                if progress is not None:
+                    progress(completed, len(scan_times))
+        except BaseException:
+            for future in futures:
+                future.cancel()
+            raise
+    return tuple(match for match in matches if match is not None)
 
 
 def calculate_anchor_count(duration: float) -> int:

@@ -29,11 +29,31 @@ def available_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> None:
         **kwargs: object,
     ) -> MediaInfo:
         assert config.output is not None
+        target_streams = tuple(
+            replace(
+                s,
+                default=False,
+                dispositions=tuple(d for d in s.dispositions if d != "default"),
+            )
+            if config.source_default and s.kind == "audio"
+            else s
+            for s in target_info.streams
+        )
+        dispositions = tuple(
+            sorted(
+                (
+                    *(d for d in source_audio.dispositions if d != "default"),
+                    *(("default",) if config.source_default else ()),
+                )
+            )
+        )
         added_audio = replace(
             source_audio,
             index=len(target_info.streams),
             language=config.language or source_audio.language,
             title=config.track_name or source_audio.title,
+            default=config.source_default,
+            dispositions=dispositions,
         )
         return MediaInfo(
             config.output,
@@ -41,7 +61,7 @@ def available_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> None:
             target_info.duration,
             None,
             None,
-            (*target_info.streams, added_audio),
+            (*target_streams, added_audio),
         )
 
     monkeypatch.setattr("dubgraft.cli.render_media", render)
@@ -133,6 +153,16 @@ def test_cli_help_explains_inherited_output_extension(
     assert "without an extension, uses the Target extension" in output
 
 
+def test_cli_help_includes_source_default(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--help"])
+
+    assert exit_info.value.code == 0
+    assert "--source-default" in capsys.readouterr().out
+
+
 def test_cli_accepts_long_audio_stream_options() -> None:
     config = parse_processing_config(
         [
@@ -165,6 +195,33 @@ def test_cli_accepts_audio_metadata() -> None:
 
     assert config.language == "por"
     assert config.track_name == "Português Brasileiro"
+
+
+def test_cli_accepts_source_default() -> None:
+    config = parse_processing_config(
+        [
+            "source.mkv",
+            "target.mkv",
+            "output.mkv",
+            "--source-default",
+        ]
+    )
+
+    assert config.source_default is True
+
+
+def test_cli_accepts_source_default_with_analyze_only() -> None:
+    config = parse_processing_config(
+        [
+            "source.mkv",
+            "target.mkv",
+            "--analyze-only",
+            "--source-default",
+        ]
+    )
+
+    assert config.analyze_only is True
+    assert config.source_default is True
 
 
 def test_cli_accepts_advanced_analysis_options() -> None:
@@ -1004,6 +1061,45 @@ def test_cli_writes_completed_processing_report(
     assert data["parameters"]["matching"]["anchor_count"] == 4
     assert data["parameters"]["matching"]["minimum_anchor_distance_seconds"] == 10
     assert data["parameters"]["timeline"]["direct_tolerance_seconds"] == 0.035
+
+
+def test_cli_reports_source_default_in_report_and_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    available_ffmpeg: None,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    output = tmp_path / "output.mkv"
+    report = tmp_path / "report.json"
+    source.touch()
+    target.touch()
+    monkeypatch.setattr("dubgraft.cli.probe_media", single_audio_info)
+
+    assert (
+        main(
+            [
+                str(source),
+                str(target),
+                str(output),
+                "--source-default",
+                "--report",
+                str(report),
+                "--print-report",
+            ]
+        )
+        == 0
+    )
+
+    data = json.loads(report.read_text(encoding="utf-8"))
+    assert data["processing"]["source_default"] is True
+    assert data["processing"]["added_audio"]["default"] is True
+    assert "default" in data["processing"]["added_audio"]["dispositions"]
+
+    out = capsys.readouterr().out
+    assert "Source default audio: yes" in out
+    assert "default" in out
 
 
 def test_cli_preserves_analysis_report_when_rendering_fails(

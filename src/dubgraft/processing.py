@@ -244,6 +244,25 @@ _STATISTICS_METADATA_KEYS = (
 )
 
 
+def _expected_target_stream_dispositions(
+    stream: MediaStream, *, source_default: bool
+) -> tuple[str, ...]:
+    if source_default and stream.kind == "audio":
+        return tuple(
+            sorted(value for value in stream.dispositions if value != "default")
+        )
+    return stream.dispositions
+
+
+def _expected_added_audio_dispositions(
+    source_audio: MediaStream, *, source_default: bool
+) -> tuple[str, ...]:
+    non_default = [value for value in source_audio.dispositions if value != "default"]
+    if source_default:
+        return tuple(sorted((*non_default, "default")))
+    return tuple(sorted(non_default))
+
+
 def _ordered_target_streams(
     target_info: MediaInfo,
 ) -> tuple[tuple[MediaStream, ...], tuple[MediaStream, ...]]:
@@ -317,8 +336,8 @@ def _audio_metadata_arguments(
             arguments.extend([f"-metadata:s:a:{audio_index}", f"handler_name={title}"])
     for key in _STATISTICS_METADATA_KEYS:
         arguments.extend([f"-metadata:s:a:{audio_index}", f"{key}="])
-    dispositions = tuple(
-        value for value in source_audio.dispositions if value != "default"
+    dispositions = _expected_added_audio_dispositions(
+        source_audio, source_default=config.source_default
     )
     arguments.extend(
         [
@@ -334,6 +353,7 @@ def _target_stream_metadata_arguments(
     output: Path,
     *,
     insertion_index: int | None = None,
+    source_default: bool = False,
 ) -> list[str]:
     arguments = []
     positions = _target_output_positions(target_info)
@@ -352,8 +372,11 @@ def _target_stream_metadata_arguments(
                 arguments.extend(
                     [f"-metadata:s:{output_position}", f"handler_name={stream.title}"]
                 )
+        dispositions = _expected_target_stream_dispositions(
+            stream, source_default=source_default
+        )
         arguments.extend(
-            [f"-disposition:{output_position}", "+".join(stream.dispositions) or "0"]
+            [f"-disposition:{output_position}", "+".join(dispositions) or "0"]
         )
         if stream.kind == "video" and not stream.attached_picture:
             for option, value in (
@@ -537,6 +560,9 @@ def _validate_output(
                     f"Target stream {position} {name} expected {expected!r}, "
                     f"found {actual!r}"
                 )
+        expected_target_dispositions = _expected_target_stream_dispositions(
+            target_stream, source_default=config.source_default
+        )
         comparable_dispositions = output_stream.dispositions
         if (
             path.suffix.casefold() in {".mp4", ".m4v", ".mov"}
@@ -548,9 +574,10 @@ def _validate_output(
                 for value in comparable_dispositions
                 if value != "timed_thumbnails"
             )
-        dispositions_match = comparable_dispositions == target_stream.dispositions
+        dispositions_match = comparable_dispositions == expected_target_dispositions
         if (
             not dispositions_match
+            and not config.source_default
             and path.suffix.casefold() in {".mp4", ".m4v", ".mov"}
             and "default" not in target_stream.dispositions
             and not any(
@@ -560,12 +587,12 @@ def _validate_output(
         ):
             dispositions_match = (
                 tuple(value for value in comparable_dispositions if value != "default")
-                == target_stream.dispositions
+                == expected_target_dispositions
             )
         if not dispositions_match:
             fail(
                 f"Target stream {position} dispositions expected "
-                f"{target_stream.dispositions!r}, found {output_stream.dispositions!r}"
+                f"{expected_target_dispositions!r}, found {output_stream.dispositions!r}"
             )
 
     if target_info.title is not None and output_info.title != target_info.title:
@@ -587,26 +614,34 @@ def _validate_output(
         ):
             fail(f"Target chapter {position} changed during muxing")
 
-    target_default_audio_count = sum(
-        stream.kind == "audio" and "default" in stream.dispositions
-        for stream in target_info.streams
-    )
     default_audio_positions = [
         position
         for position, stream in enumerate(output_info.streams)
         if stream.kind == "audio" and "default" in stream.dispositions
     ]
-    if len(
-        default_audio_positions
-    ) > target_default_audio_count and path.suffix.casefold() not in {
-        ".mp4",
-        ".m4v",
-        ".mov",
-    }:
-        fail(
-            f"expected at most {target_default_audio_count} default audio stream(s), found "
-            f"{len(default_audio_positions)} at positions {default_audio_positions}"
+    if config.source_default:
+        if default_audio_positions != [added_audio_position]:
+            fail(
+                "expected only the added audio stream to have default disposition, "
+                f"found default audio stream(s) at positions {default_audio_positions} "
+                f"(added audio is at position {added_audio_position})"
+            )
+    else:
+        target_default_audio_count = sum(
+            stream.kind == "audio" and "default" in stream.dispositions
+            for stream in target_info.streams
         )
+        if len(
+            default_audio_positions
+        ) > target_default_audio_count and path.suffix.casefold() not in {
+            ".mp4",
+            ".m4v",
+            ".mov",
+        }:
+            fail(
+                f"expected at most {target_default_audio_count} default audio stream(s), found "
+                f"{len(default_audio_positions)} at positions {default_audio_positions}"
+            )
 
     for name, expected, actual in (
         ("codec", audio_codec, added_audio.codec),
@@ -618,12 +653,13 @@ def _validate_output(
     ):
         if expected is not None and actual != expected:
             fail(f"added audio {name} expected {expected!r}, found {actual!r}")
-    expected_added_dispositions = tuple(
-        value for value in source_audio.dispositions if value != "default"
+    expected_added_dispositions = _expected_added_audio_dispositions(
+        source_audio, source_default=config.source_default
     )
     added_dispositions_match = added_audio.dispositions == expected_added_dispositions
     if (
         not added_dispositions_match
+        and not config.source_default
         and path.suffix.casefold() in {".mp4", ".m4v", ".mov"}
         and "default" not in expected_added_dispositions
     ):
@@ -698,7 +734,9 @@ def validate_mux_compatibility(
                 "0.1",
             ]
             command.extend(
-                _target_stream_metadata_arguments(target_info, temporary_output)
+                _target_stream_metadata_arguments(
+                    target_info, temporary_output, source_default=config.source_default
+                )
             )
             command.extend(
                 _container_preservation_arguments(temporary_output, target_info)
@@ -774,7 +812,10 @@ def validate_render_compatibility(
                 command.extend([f"-c:a:{audio_index}", "eac3", "-b:a", "640k"])
             command.extend(
                 _target_stream_metadata_arguments(
-                    target_info, temporary_output, insertion_index=insertion_index
+                    target_info,
+                    temporary_output,
+                    insertion_index=insertion_index,
+                    source_default=config.source_default,
                 )
             )
             command.extend(
@@ -912,7 +953,10 @@ def mux_source_audio(
             )
             command.extend(
                 _target_stream_metadata_arguments(
-                    target_info, temporary_output, insertion_index=insertion_index
+                    target_info,
+                    temporary_output,
+                    insertion_index=insertion_index,
+                    source_default=config.source_default,
                 )
             )
             command.extend(
@@ -1082,7 +1126,10 @@ def mux_drift_audio(
             )
             command.extend(
                 _target_stream_metadata_arguments(
-                    target_info, temporary_output, insertion_index=insertion_index
+                    target_info,
+                    temporary_output,
+                    insertion_index=insertion_index,
+                    source_default=config.source_default,
                 )
             )
             command.extend(

@@ -275,6 +275,37 @@ def test_processing_config_rejects_analysis_metadata(tmp_path: Path) -> None:
         )
 
 
+def test_processing_config_preserves_source_default(tmp_path: Path) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+
+    validated = validate_processing_config(
+        ProcessingConfig(
+            source,
+            target,
+            tmp_path / "output.mkv",
+            source_default=True,
+        )
+    )
+    assert validated.source_default is True
+
+
+def test_processing_config_accepts_source_default_with_analyze_only(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target = tmp_path / "target.mkv"
+    source.touch()
+    target.touch()
+
+    validated = validate_processing_config(
+        ProcessingConfig(source, target, analyze_only=True, source_default=True)
+    )
+    assert validated.source_default is True
+
+
 def test_processing_config_rejects_log_collisions(tmp_path: Path) -> None:
     source = tmp_path / "source.mkv"
     target = tmp_path / "target.mkv"

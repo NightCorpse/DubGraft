@@ -158,16 +158,33 @@ def output_info(
     language: str = "por",
     title: str = "Brazilian Portuguese",
     dispositions: tuple[str, ...] | None = None,
+    source_default: bool = False,
 ) -> MediaInfo:
-    before, after = _ordered_target_streams(target_info)
+    target_streams = tuple(
+        replace(
+            s,
+            default=False,
+            dispositions=tuple(d for d in s.dispositions if d != "default"),
+        )
+        if source_default and s.kind == "audio"
+        else s
+        for s in target_info.streams
+    )
+    target_reordered = replace(target_info, streams=target_streams)
+    before, after = _ordered_target_streams(target_reordered)
     added_position = len(before)
     if dispositions is None:
-        dispositions = tuple(d for d in source_audio.dispositions if d != "default")
+        non_default = [d for d in source_audio.dispositions if d != "default"]
+        if source_default:
+            dispositions = tuple(sorted((*non_default, "default")))
+        else:
+            dispositions = tuple(sorted(non_default))
     added_audio = replace(
         source_audio,
         index=added_position,
         language=language,
         title=title,
+        default=source_default,
         dispositions=dispositions,
     )
     output_streams = (
@@ -1425,3 +1442,182 @@ def test_output_validation_preserves_multiple_default_audio_streams_from_target(
         source_audio,
         audio_codec="eac3",
     )
+
+
+def test_audio_metadata_arguments_handles_source_default_enabled(
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+    config_default = replace(config, source_default=True)
+
+    source_with_hi = replace(source_audio, dispositions=("hearing_impaired",))
+    args = _audio_metadata_arguments(
+        config_default, target_info, source_with_hi, config.output
+    )
+    assert "-disposition:a:2" in args
+    assert args[args.index("-disposition:a:2") + 1] == "default+hearing_impaired"
+
+    source_with_both = replace(
+        source_audio, dispositions=("default", "hearing_impaired")
+    )
+    args_both = _audio_metadata_arguments(
+        config_default, target_info, source_with_both, config.output
+    )
+    assert "-disposition:a:2" in args_both
+    assert (
+        args_both[args_both.index("-disposition:a:2") + 1] == "default+hearing_impaired"
+    )
+
+    source_empty = replace(source_audio, dispositions=())
+    args_empty = _audio_metadata_arguments(
+        config_default, target_info, source_empty, config.output
+    )
+    assert "-disposition:a:2" in args_empty
+    assert args_empty[args_empty.index("-disposition:a:2") + 1] == "default"
+
+
+def test_target_stream_metadata_arguments_removes_audio_default_when_source_default_enabled() -> (
+    None
+):
+    target_info = MediaInfo(
+        Path("t.mkv"),
+        "matroska",
+        10.0,
+        None,
+        None,
+        (
+            MediaStream(index=0, kind="video", codec="hevc", dispositions=("default",)),
+            MediaStream(
+                index=1,
+                kind="audio",
+                codec="eac3",
+                dispositions=("default", "hearing_impaired"),
+            ),
+            MediaStream(
+                index=2,
+                kind="subtitle",
+                codec="subrip",
+                dispositions=("default",),
+            ),
+        ),
+    )
+    args = _target_stream_metadata_arguments(
+        target_info, Path("output.mkv"), source_default=True
+    )
+    assert args[args.index("-disposition:0") + 1] == "default"
+    assert args[args.index("-disposition:1") + 1] == "hearing_impaired"
+    assert args[args.index("-disposition:3") + 1] == "default"
+
+
+def test_output_validation_with_source_default_accepts_valid_output(
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+    config_default = replace(config, source_default=True)
+    expected = output_info(
+        config_default.output, target_info, source_audio, source_default=True
+    )
+    monkeypatch.setattr("dubgraft.processing.probe_media", lambda path: expected)
+    _validate_output(
+        config_default.output,
+        config_default,
+        target_info,
+        source_audio,
+        audio_codec="eac3",
+    )
+
+
+def test_output_validation_with_source_default_rejects_retained_target_default(
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+    config_default = replace(config, source_default=True)
+    expected = output_info(
+        config_default.output, target_info, source_audio, source_default=True
+    )
+    streams = list(expected.streams)
+    streams[1] = replace(streams[1], dispositions=("default",))
+    monkeypatch.setattr(
+        "dubgraft.processing.probe_media",
+        lambda path: replace(expected, streams=tuple(streams)),
+    )
+    with pytest.raises(ProcessingError, match="dispositions expected"):
+        _validate_output(
+            config_default.output,
+            config_default,
+            target_info,
+            source_audio,
+            audio_codec="eac3",
+        )
+
+
+def test_output_validation_with_source_default_rejects_missing_added_default(
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+    config_default = replace(config, source_default=True)
+    expected = output_info(
+        config_default.output, target_info, source_audio, source_default=True
+    )
+    streams = list(expected.streams)
+    streams[3] = replace(streams[3], dispositions=())
+    monkeypatch.setattr(
+        "dubgraft.processing.probe_media",
+        lambda path: replace(expected, streams=tuple(streams)),
+    )
+    with pytest.raises(
+        ProcessingError,
+        match="expected only the added audio stream to have default disposition",
+    ):
+        _validate_output(
+            config_default.output,
+            config_default,
+            target_info,
+            source_audio,
+            audio_codec="eac3",
+        )
+
+
+def test_mux_source_audio_applies_source_default(
+    processing_media: tuple[
+        ProcessingConfig, MediaInfo, MediaInfo, MediaStream, MediaStream
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, _, target_info, source_audio, _ = processing_media
+    config_default = replace(config, source_default=True)
+    commands: list[list[str]] = []
+    monkeypatch.setattr("dubgraft.execution.shutil.which", lambda name: "/bin/ffmpeg")
+
+    def fake_run(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        Path(command[-1]).touch()
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("dubgraft.execution.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "dubgraft.processing._validate_output",
+        lambda path, *args, **kwargs: output_info(
+            path, target_info, source_audio, source_default=True
+        ),
+    )
+    mux_source_audio(config_default, target_info, source_audio, offset=0)
+
+    command = commands[-1]
+    assert "-disposition:1" in command
+    assert command[command.index("-disposition:1") + 1] == "0"
+    assert "-disposition:a:2" in command
+    assert command[command.index("-disposition:a:2") + 1] == "default"

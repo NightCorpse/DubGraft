@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 import sysconfig
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,7 @@ def run_dubgraft(
     report: Path,
     *,
     workdir: Path,
+    extra_arguments: Sequence[str] = (),
 ) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
@@ -75,6 +77,7 @@ def run_dubgraft(
             "--force",
             "--report",
             str(report),
+            *extra_arguments,
             "--quiet",
         ],
         cwd=workdir,
@@ -321,6 +324,40 @@ def test_drift_flow(
     assert added_audio["tags"]["language"] == "por"
     assert added_audio["tags"]["title"] == "SyntheticDub"
     assert float(output_probe["format"]["duration"]) == pytest.approx(24, abs=0.1)
+    decode_output(output)
+    assert not list(tmp_path.glob(".dubgraft-*"))
+
+
+def test_installed_cli_source_default_makes_grafted_audio_sole_default(
+    synthetic_cli_media: SyntheticMedia,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "direct_default.mkv"
+    report_path = tmp_path / "direct_default.json"
+
+    result = run_dubgraft(
+        synthetic_cli_media.direct,
+        synthetic_cli_media.target,
+        output,
+        report_path,
+        workdir=tmp_path,
+        extra_arguments=["--source-default"],
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert output.is_file()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["status"] == "completed"
+    assert report["processing"]["source_default"] is True
+    assert report["processing"]["added_audio"]["default"] is True
+
+    output_probe = probe(output)
+    streams = output_probe["streams"]
+    audios = [s for s in streams if s["codec_type"] == "audio"]
+    assert len(audios) == 2
+    assert audios[0]["disposition"]["default"] == 0
+    assert audios[1]["disposition"]["default"] == 1
+    assert audios[1]["tags"]["title"] == "SyntheticDub"
     decode_output(output)
     assert not list(tmp_path.glob(".dubgraft-*"))
 

@@ -253,6 +253,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="CODE",
         help="override the added audio language with an ISO 639-1 or ISO 639-2 code",
     )
+    parser.add_argument(
+        "--source-default",
+        action="store_true",
+        help="make the added Source audio the only default audio track",
+    )
     analysis_group = parser.add_argument_group("advanced analysis")
     analysis_group.add_argument(
         "-F",
@@ -425,6 +430,7 @@ def parse_processing_config(
         log=arguments.log,
         track_name=arguments.track_name,
         language=arguments.language,
+        source_default=arguments.source_default,
         matching_config=MatchingConfig(
             fingerprint_size_seconds=arguments.fingerprint_size,
             scan_step_seconds=arguments.scan_step,

@@ -55,6 +55,7 @@ class ProcessingConfig:
     matching_config: MatchingConfig = MatchingConfig()
     timeline_config: TimelineConfig = TimelineConfig()
     force: bool = False
+    source_default: bool = False
 
 
 class ConfigurationError(ValueError):
@@ -274,4 +275,5 @@ def validate_processing_config(config: ProcessingConfig) -> ProcessingConfig:
         matching_config=config.matching_config,
         timeline_config=config.timeline_config,
         force=config.force,
+        source_default=config.source_default,
     )

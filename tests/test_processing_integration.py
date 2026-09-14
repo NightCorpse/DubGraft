@@ -29,6 +29,138 @@ def run_ffmpeg(*arguments: str) -> None:
     )
 
 
+def test_mux_source_default_makes_grafted_audio_sole_default_in_mkv_and_mp4(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.mkv"
+    target_mkv = tmp_path / "target.mkv"
+    output_mkv = tmp_path / "output.mkv"
+    output_mp4 = tmp_path / "output.mp4"
+
+    run_ffmpeg(
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=880:sample_rate=48000:duration=1",
+        "-c:a",
+        "eac3",
+        "-b:a",
+        "192k",
+        "-metadata:s:a:0",
+        "language=por",
+        "-metadata:s:a:0",
+        "title=Dublado",
+        str(source),
+    )
+
+    run_ffmpeg(
+        "-f",
+        "lavfi",
+        "-i",
+        "color=size=64x64:rate=24:duration=1",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:sample_rate=48000:duration=1",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=550:sample_rate=48000:duration=1",
+        "-map",
+        "0:v",
+        "-map",
+        "1:a",
+        "-map",
+        "2:a",
+        "-c:v",
+        "ffv1",
+        "-c:a",
+        "pcm_s16le",
+        "-metadata:s:a:0",
+        "language=eng",
+        "-metadata:s:a:0",
+        "title=Original",
+        "-disposition:a:0",
+        "default",
+        "-metadata:s:a:1",
+        "language=fra",
+        "-metadata:s:a:1",
+        "title=French",
+        "-disposition:a:1",
+        "default",
+        str(target_mkv),
+    )
+
+    source_info = probe_media(source)
+    target_info = probe_media(target_mkv)
+    source_audio = select_audio_stream(source_info)
+
+    config_mkv = ProcessingConfig(source, target_mkv, output_mkv, source_default=True)
+    validated_mkv = mux_source_audio(
+        config_mkv,
+        target_info,
+        source_audio,
+        offset=0,
+        source_duration=source_info.duration,
+    )
+    assert validated_mkv.path == output_mkv.resolve()
+    info_mkv = probe_media(output_mkv)
+    assert [s.kind for s in info_mkv.streams] == ["video", "audio", "audio", "audio"]
+    assert "default" not in info_mkv.streams[1].dispositions
+    assert "default" not in info_mkv.streams[2].dispositions
+    assert "default" in info_mkv.streams[3].dispositions
+    default_audios_mkv = [
+        s for s in info_mkv.streams if s.kind == "audio" and "default" in s.dispositions
+    ]
+    assert len(default_audios_mkv) == 1
+    assert default_audios_mkv[0].title == "Dublado"
+
+    target_mp4 = tmp_path / "target.mp4"
+    run_ffmpeg(
+        "-f",
+        "lavfi",
+        "-i",
+        "color=size=64x64:rate=24:duration=1",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:sample_rate=48000:duration=1",
+        "-map",
+        "0:v",
+        "-map",
+        "1:a",
+        "-c:v",
+        "mpeg4",
+        "-c:a",
+        "aac",
+        "-metadata:s:a:0",
+        "language=eng",
+        "-metadata:s:a:0",
+        "handler_name=Original",
+        "-disposition:a:0",
+        "default",
+        str(target_mp4),
+    )
+    target_mp4_info = probe_media(target_mp4)
+    config_mp4 = ProcessingConfig(source, target_mp4, output_mp4, source_default=True)
+    validated_mp4 = mux_source_audio(
+        config_mp4,
+        target_mp4_info,
+        source_audio,
+        offset=0,
+        source_duration=source_info.duration,
+    )
+    assert validated_mp4.path == output_mp4.resolve()
+    info_mp4 = probe_media(output_mp4)
+    assert "default" not in info_mp4.streams[1].dispositions
+    assert "default" in info_mp4.streams[2].dispositions
+    default_audios_mp4 = [
+        s for s in info_mp4.streams if s.kind == "audio" and "default" in s.dispositions
+    ]
+    assert len(default_audios_mp4) == 1
+    assert default_audios_mp4[0].title == "Dublado"
+
+
 @pytest.fixture
 def synthetic_media(tmp_path: Path) -> tuple[Path, Path]:
     source = tmp_path / "source.mkv"

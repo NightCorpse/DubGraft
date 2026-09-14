@@ -144,6 +144,7 @@ def build_report(
                 "language": config.language,
                 "title": config.track_name,
             },
+            "source_default": config.source_default,
             "added_audio": asdict(added_audio) if added_audio is not None else None,
         },
     }
@@ -283,6 +284,8 @@ def format_human_report(
         overrides.append(f"title={config.track_name}")
     if overrides:
         lines.append(f"  Requested metadata overrides: {' | '.join(overrides)}")
+    if config.source_default:
+        lines.append("  Source default audio: yes")
     if added_audio is not None:
         lines.append(f"  Added audio: {_audio_format(added_audio)}")
 

@@ -244,35 +244,58 @@ _STATISTICS_METADATA_KEYS = (
 )
 
 
+def _ordered_target_streams(
+    target_info: MediaInfo,
+) -> tuple[tuple[MediaStream, ...], tuple[MediaStream, ...]]:
+    """Partition Target streams into (before_added_audio, after_added_audio).
+
+    All non-attached video streams and all audio streams are placed before
+    the added audio, ensuring all audios are contiguously grouped even if
+    dispersed in the original Target. Subtitles, attachments, and other
+    streams are placed after the added audio.
+    """
+    videos = tuple(
+        stream
+        for stream in target_info.streams
+        if stream.kind == "video" and not stream.attached_picture
+    )
+    audios = tuple(stream for stream in target_info.streams if stream.kind == "audio")
+    before = videos + audios
+    before_ids = {id(stream) for stream in before}
+    after = tuple(
+        stream for stream in target_info.streams if id(stream) not in before_ids
+    )
+    return before, after
+
+
 def _added_audio_target_insertion_index(target_info: MediaInfo) -> int:
-    audio_indices = [
-        position
-        for position, stream in enumerate(target_info.streams)
-        if stream.kind == "audio"
-    ]
-    if audio_indices:
-        return audio_indices[-1]
-    video_indices = [
-        position
-        for position, stream in enumerate(target_info.streams)
-        if stream.kind == "video"
-    ]
-    if video_indices:
-        return video_indices[-1]
-    return len(target_info.streams) - 1
+    before, _ = _ordered_target_streams(target_info)
+    return len(before) - 1
 
 
 def _added_audio_output_index(target_info: MediaInfo) -> int:
-    return _added_audio_target_insertion_index(target_info) + 1
+    before, _ = _ordered_target_streams(target_info)
+    return len(before)
+
+
+def _target_output_positions(target_info: MediaInfo) -> dict[int, int]:
+    before, after = _ordered_target_streams(target_info)
+    positions: dict[int, int] = {}
+    for output_pos, stream in enumerate(before):
+        positions[id(stream)] = output_pos
+    added_index = len(before)
+    for offset, stream in enumerate(after, start=1):
+        positions[id(stream)] = added_index + offset
+    return positions
 
 
 def _stream_mapping_arguments(target_info: MediaInfo, source_stream: str) -> list[str]:
-    insertion_index = _added_audio_target_insertion_index(target_info)
+    before, after = _ordered_target_streams(target_info)
     arguments: list[str] = []
-    for stream in target_info.streams[: insertion_index + 1]:
+    for stream in before:
         arguments.extend(["-map", f"0:{stream.index}"])
     arguments.extend(["-map", source_stream])
-    for stream in target_info.streams[insertion_index + 1 :]:
+    for stream in after:
         arguments.extend(["-map", f"0:{stream.index}"])
     return arguments
 
@@ -313,13 +336,10 @@ def _target_stream_metadata_arguments(
     insertion_index: int | None = None,
 ) -> list[str]:
     arguments = []
+    positions = _target_output_positions(target_info)
     video_index = 0
-    for position, stream in enumerate(target_info.streams):
-        output_position = (
-            position
-            if insertion_index is None or position <= insertion_index
-            else position + 1
-        )
+    for stream in target_info.streams:
+        output_position = positions[id(stream)]
         if stream.language:
             arguments.extend(
                 [f"-metadata:s:{output_position}", f"language={stream.language}"]
@@ -335,7 +355,7 @@ def _target_stream_metadata_arguments(
         arguments.extend(
             [f"-disposition:{output_position}", "+".join(stream.dispositions) or "0"]
         )
-        if stream.kind == "video":
+        if stream.kind == "video" and not stream.attached_picture:
             for option, value in (
                 ("color_range", stream.color_range),
                 ("colorspace", stream.color_space),

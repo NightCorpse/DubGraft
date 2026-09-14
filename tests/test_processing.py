@@ -16,6 +16,7 @@ from dubgraft.processing import (
     _added_audio_output_index,
     _added_audio_target_insertion_index,
     _audio_metadata_arguments,
+    _ordered_target_streams,
     _run_ffmpeg,
     _stream_mapping_arguments,
     _target_stream_metadata_arguments,
@@ -158,15 +159,8 @@ def output_info(
     title: str = "Brazilian Portuguese",
     dispositions: tuple[str, ...] | None = None,
 ) -> MediaInfo:
-    audio_indices = [
-        position
-        for position, stream in enumerate(target_info.streams)
-        if stream.kind == "audio"
-    ]
-    insertion_index = (
-        audio_indices[-1] if audio_indices else len(target_info.streams) - 1
-    )
-    added_position = insertion_index + 1
+    before, after = _ordered_target_streams(target_info)
+    added_position = len(before)
     if dispositions is None:
         dispositions = tuple(d for d in source_audio.dispositions if d != "default")
     added_audio = replace(
@@ -177,9 +171,9 @@ def output_info(
         dispositions=dispositions,
     )
     output_streams = (
-        *target_info.streams[: insertion_index + 1],
+        *before,
         added_audio,
-        *target_info.streams[insertion_index + 1 :],
+        *after,
     )
     return MediaInfo(
         path,
@@ -1251,6 +1245,73 @@ def test_stream_mapping_places_audio_after_video_when_target_has_no_audio() -> N
     assert args == ["-map", "0:0", "-map", "1:0", "-map", "0:1"]
     assert _added_audio_target_insertion_index(target_info) == 0
     assert _added_audio_output_index(target_info) == 1
+
+
+def test_stream_mapping_groups_dispersed_target_audios_before_added_audio() -> None:
+    target_info = MediaInfo(
+        Path("t.mkv"),
+        "matroska",
+        10.0,
+        None,
+        None,
+        (
+            MediaStream(index=0, kind="video", codec="hevc"),
+            MediaStream(index=1, kind="subtitle", codec="subrip"),
+            MediaStream(index=2, kind="audio", codec="eac3"),
+            MediaStream(index=3, kind="subtitle", codec="subrip"),
+            MediaStream(index=4, kind="audio", codec="eac3"),
+            MediaStream(index=5, kind="video", codec="mjpeg", attached_picture=True),
+        ),
+    )
+    args = _stream_mapping_arguments(target_info, "1:0")
+    assert args == [
+        "-map",
+        "0:0",
+        "-map",
+        "0:2",
+        "-map",
+        "0:4",
+        "-map",
+        "1:0",
+        "-map",
+        "0:1",
+        "-map",
+        "0:3",
+        "-map",
+        "0:5",
+    ]
+    assert _added_audio_output_index(target_info) == 3
+
+
+def test_target_stream_metadata_arguments_maps_correct_output_positions_when_dispersed() -> (
+    None
+):
+    target_info = MediaInfo(
+        Path("t.mkv"),
+        "matroska",
+        10.0,
+        None,
+        None,
+        (
+            MediaStream(index=0, kind="video", codec="hevc"),
+            MediaStream(index=1, kind="subtitle", codec="subrip", language="eng"),
+            MediaStream(
+                index=2, kind="audio", codec="eac3", language="eng", title="Track 1"
+            ),
+            MediaStream(
+                index=3, kind="audio", codec="eac3", language="fra", title="Track 2"
+            ),
+        ),
+    )
+    args = _target_stream_metadata_arguments(target_info, Path("output.mkv"))
+    assert "-metadata:s:1" in args
+    assert args[args.index("-metadata:s:1") + 1] == "language=eng"
+    assert args[args.index("-metadata:s:1") + 3] == "title=Track 1"
+    assert "-metadata:s:2" in args
+    assert args[args.index("-metadata:s:2") + 1] == "language=fra"
+    assert args[args.index("-metadata:s:2") + 3] == "title=Track 2"
+    assert "-metadata:s:4" in args
+    assert args[args.index("-metadata:s:4") + 1] == "language=eng"
 
 
 def test_audio_metadata_arguments_clears_statistics_and_handles_default(
